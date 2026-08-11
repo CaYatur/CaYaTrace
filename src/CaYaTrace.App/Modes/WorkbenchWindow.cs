@@ -181,7 +181,11 @@ public sealed class WorkbenchWindow : Form
             flows.NoteConnect(flow.Key, flow.Owner, flow.FirstSeen, flow.OwnerEvidence ?? "stored");
 
         var builder = new CausalGraphBuilder(processes, flows);
-        IReadOnlyList<CausalNode> roots = builder.Build(store.Query(), options ?? CausalGraphOptions.Default);
+        options ??= new CausalGraphOptions
+        {
+            RootProcess = session.RootProcess == ProcessKey.None ? null : session.RootProcess,
+        };
+        IReadOnlyList<CausalNode> roots = builder.Build(store.Query(), options);
 
         return JsonSerializer.Serialize(new { session, tree = roots }, Json);
     }

@@ -194,3 +194,71 @@ public sealed class ProcessIdentityTests
         Assert.Equal(ProcessKey.None, table.ResolveByThread(555));
     }
 }
+
+/// <summary>
+/// JSON behaviour of the identity type. Separate class because the failure mode is
+/// distinct: the value serializes correctly and comes back wrong.
+/// </summary>
+public sealed class ProcessKeyJsonTests
+{
+    [Fact]
+    public void KeySurvivesJsonRoundTrip()
+    {
+        // A struct always has an implicit parameterless constructor, which
+        // System.Text.Json prefers over the real one. With read-only properties that
+        // silently produced ProcessKey.None on every reload.
+        var original = ProcessKey.FromStartKey(55488, 0xFFFF808D7E00C0C0, DateTimeOffset.UtcNow);
+
+        string json = System.Text.Json.JsonSerializer.Serialize(original);
+        ProcessKey restored = System.Text.Json.JsonSerializer.Deserialize<ProcessKey>(json);
+
+        Assert.Equal(original.Pid, restored.Pid);
+        Assert.Equal(original.StartKey, restored.StartKey);
+        Assert.NotEqual(ProcessKey.None, restored);
+        Assert.Equal(original, restored);
+    }
+
+    [Fact]
+    public void KeySurvivesTheOptionsStorageActuallyUses()
+    {
+        // The store enables PreferredObjectCreationHandling.Populate so that get-only
+        // collections round-trip. That setting interacts with parameterized
+        // constructors, so the identity type must be verified under the real options
+        // rather than the defaults.
+        var options = new System.Text.Json.JsonSerializerOptions
+        {
+            PreferredObjectCreationHandling = System.Text.Json.Serialization.JsonObjectCreationHandling.Populate,
+        };
+        var original = ProcessKey.FromStartKey(55488, 0xFFFF808D7E00C0C0, DateTimeOffset.UtcNow);
+
+        string json = System.Text.Json.JsonSerializer.Serialize(original, options);
+        ProcessKey restored = System.Text.Json.JsonSerializer.Deserialize<ProcessKey>(json, options);
+
+        Assert.Equal(original.StartKey, restored.StartKey);
+        Assert.NotEqual(ProcessKey.None, restored);
+    }
+
+    [Fact]
+    public void SessionRootSurvivesJsonRoundTrip()
+    {
+        var session = new SessionInfo
+        {
+            SessionId = "s",
+            StartedAt = DateTimeOffset.UtcNow,
+            RootProcess = ProcessKey.FromStartKey(4812, 0xABCD, DateTimeOffset.UtcNow),
+        };
+
+        // Serialized with the store's real options: Populate is what makes get-only
+        // collections round-trip, and it is exactly what breaks a struct property.
+        var options = new System.Text.Json.JsonSerializerOptions
+        {
+            PreferredObjectCreationHandling = System.Text.Json.Serialization.JsonObjectCreationHandling.Populate,
+        };
+        string json = System.Text.Json.JsonSerializer.Serialize(session, options);
+        SessionInfo? restored = System.Text.Json.JsonSerializer.Deserialize<SessionInfo>(json, options);
+
+        Assert.NotNull(restored);
+        Assert.NotEqual(ProcessKey.None, restored.RootProcess);
+        Assert.Equal(0xABCDUL, restored.RootProcess.StartKey);
+    }
+}

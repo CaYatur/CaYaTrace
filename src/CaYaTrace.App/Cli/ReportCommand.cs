@@ -43,6 +43,12 @@ public static class ReportCommand
             IncludeOutOfScope = cmd.Flag("include-out-of-scope"),
             MaxArtifactsPerGroup = cmd.Int("max-per-group", 400),
             OriginId = cmd.Get("origin"),
+
+            // Anchor on the subject unless the analyst explicitly asks for the whole
+            // machine, so the tree does not open on the shell that launched the tool.
+            RootProcess = cmd.Flag("whole-machine") || session.RootProcess == ProcessKey.None
+                ? null
+                : session.RootProcess,
         };
 
         var builder = new CausalGraphBuilder(processes, flows);

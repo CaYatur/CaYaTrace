@@ -19,6 +19,7 @@ namespace CaYaTrace.Core.Model;
 /// fall back to (PID, creation time), which is unique in practice because PID
 /// reuse within the same 100ns tick does not happen.
 /// </remarks>
+[System.Text.Json.Serialization.JsonConverter(typeof(ProcessKeyJsonConverter))]
 public readonly struct ProcessKey : IEquatable<ProcessKey>, IComparable<ProcessKey>
 {
     /// <summary>Sentinel for "no process" / kernel / unresolved actor.</summary>
@@ -140,4 +141,74 @@ public readonly struct ProcessKey : IEquatable<ProcessKey>, IComparable<ProcessK
                 return false;
         }
     }
+}
+
+/// <summary>
+/// Serializes <see cref="ProcessKey"/> as its canonical text form.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Written because the default object mapping was quietly unsound. A struct always has
+/// an implicit parameterless constructor, and every property here is read-only, so
+/// System.Text.Json produced a value that serialized correctly and came back as
+/// <see cref="ProcessKey.None"/>. Marking the real constructor was not enough: the
+/// store enables <c>PreferredObjectCreationHandling.Populate</c> so that get-only
+/// collections round-trip, and Populate applied to a struct <em>property</em> leaves it at
+/// its default regardless.
+/// </para>
+/// <para>
+/// The symptom was a session forgetting which process it had been watching, so the
+/// tree re-rooted on the shell that launched the tool and buried the subject a dozen
+/// levels down — a failure with no error attached to it.
+/// </para>
+/// <para>
+/// Emitting the same <c>k:&lt;hex&gt;:&lt;pid&gt;</c> form the database columns already use removes
+/// the whole class of problem, keeps one canonical spelling of an identity across
+/// storage, packages, and exports, and makes the JSON readable.
+/// </para>
+/// </remarks>
+public sealed class ProcessKeyJsonConverter : System.Text.Json.Serialization.JsonConverter<ProcessKey>
+{
+    public override ProcessKey Read(
+        ref System.Text.Json.Utf8JsonReader reader,
+        Type typeToConvert,
+        System.Text.Json.JsonSerializerOptions options)
+    {
+        if (reader.TokenType == System.Text.Json.JsonTokenType.Null) return ProcessKey.None;
+
+        if (reader.TokenType != System.Text.Json.JsonTokenType.String)
+        {
+            // Tolerate the old object shape so sessions recorded by earlier builds
+            // still open, rather than failing to load entirely.
+            if (reader.TokenType != System.Text.Json.JsonTokenType.StartObject) return ProcessKey.None;
+
+            uint pid = 0;
+            ulong startKey = 0;
+            long ticks = 0;
+
+            while (reader.Read() && reader.TokenType != System.Text.Json.JsonTokenType.EndObject)
+            {
+                if (reader.TokenType != System.Text.Json.JsonTokenType.PropertyName) continue;
+                string? name = reader.GetString();
+                if (!reader.Read()) break;
+
+                switch (name)
+                {
+                    case "Pid" when reader.TryGetUInt32(out uint p): pid = p; break;
+                    case "StartKey" when reader.TryGetUInt64(out ulong s): startKey = s; break;
+                    case "CreateTimeTicks" when reader.TryGetInt64(out long t): ticks = t; break;
+                }
+            }
+
+            return new ProcessKey(pid, startKey, ticks);
+        }
+
+        return ProcessKey.TryParse(reader.GetString(), out ProcessKey key) ? key : ProcessKey.None;
+    }
+
+    public override void Write(
+        System.Text.Json.Utf8JsonWriter writer,
+        ProcessKey value,
+        System.Text.Json.JsonSerializerOptions options)
+        => writer.WriteStringValue(value.ToString());
 }

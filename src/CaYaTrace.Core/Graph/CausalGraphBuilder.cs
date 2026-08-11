@@ -30,6 +30,18 @@ public sealed class CausalGraphOptions
     public string? OriginId { get; init; }
 
     /// <summary>
+    /// Render the tree from this process rather than from the machine's process roots.
+    /// </summary>
+    /// <remarks>
+    /// Without it, a session that watched one program still renders every ancestor of
+    /// that program — the shell that launched CaYaTrace, the terminal that launched the
+    /// shell, and so on up to the session manager. The subject then appears indented a
+    /// dozen levels under processes that have nothing to do with it. When a session has
+    /// a designated target, that target is the root the analyst wants.
+    /// </remarks>
+    public ProcessKey? RootProcess { get; init; }
+
+    /// <summary>
     /// Collapse a directory whose children are all leaf files into a single node.
     /// Keeps an installer that drops 4000 files readable.
     /// </summary>
@@ -116,13 +128,23 @@ public sealed class CausalGraphBuilder
         var roots = new List<CausalNode>();
         var built = new Dictionary<ProcessKey, CausalNode>();
 
-        foreach (ProcessNode process in _processes.Roots())
-        {
-            if (!options.IncludeOutOfScope && !process.InScope && !HasInScopeDescendant(process))
-                continue;
+        // A designated subject anchors the tree. Everything above it in the OS process
+        // hierarchy is how the analyst happened to launch it, not part of what it did.
+        ProcessNode? designated = options.RootProcess is { } rootKey ? _processes.Get(rootKey) : null;
 
-            CausalNode node = BuildProcess(process, byProcess, options, built, depth: 0);
-            roots.Add(node);
+        if (designated is not null)
+        {
+            roots.Add(BuildProcess(designated, byProcess, options, built, depth: 0));
+        }
+        else
+        {
+            foreach (ProcessNode process in _processes.Roots())
+            {
+                if (!options.IncludeOutOfScope && !process.InScope && !HasInScopeDescendant(process))
+                    continue;
+
+                roots.Add(BuildProcess(process, byProcess, options, built, depth: 0));
+            }
         }
 
         // A process whose parent was never observed still deserves to be shown.
@@ -135,10 +157,15 @@ public sealed class CausalGraphBuilder
             roots.Add(BuildProcess(node, byProcess, options, built, depth: 0));
         }
 
+        roots.Sort(static (a, b) => a.FirstSeen.CompareTo(b.FirstSeen));
+
+        // Appended after sorting so it is always last. Unattributed activity is
+        // background noise from the rest of the machine; sorting it by timestamp
+        // regularly put it above the subject, which buries the finding under a
+        // thousand lines of antivirus logs and browser caches.
         if (orphans.Count > 0)
             roots.Add(BuildUnattributed(orphans, options));
 
-        roots.Sort(static (a, b) => a.FirstSeen.CompareTo(b.FirstSeen));
         return roots;
     }
 
@@ -248,9 +275,17 @@ public sealed class CausalGraphBuilder
         foreach (Observation o in group)
         {
             string target = o.Target.Length > 0 ? o.Target : "(unresolved)";
-            string display = o.Target2 is { Length: > 0 } && o.Category == EventCategory.Registry
+
+            // A registry value and a DNS record type both qualify the target rather
+            // than repeating it. Keeping them distinct matters for DNS in particular:
+            // a name is queried for A and AAAA together, and folding both into one
+            // node lets a failed AAAA lookup mask a successful A — reporting a
+            // resolution that worked as one that failed.
+            string display = o.Target2 is { Length: > 0 } && o.Category is EventCategory.Registry
                 ? $"{target}::{o.Target2}"
-                : target;
+                : o.Target2 is { Length: > 0 } && o.Category is EventCategory.Dns
+                    ? $"{target}  ({o.Target2})"
+                    : target;
 
             if (!artifacts.TryGetValue(display, out CausalNode? node))
             {

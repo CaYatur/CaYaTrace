@@ -31,6 +31,14 @@ public sealed class SessionOptions
 
     public KernelCollectorOptions Kernel { get; init; } = KernelCollectorOptions.Default;
 
+    /// <summary>
+    /// Collect DNS, TLS metadata, and URLs from the Windows HTTP stacks. Non-invasive:
+    /// no certificate authority, no proxy, nothing changed on the machine.
+    /// </summary>
+    public bool CollectNetworkMetadata { get; init; } = true;
+
+    public NetworkCollectorOptions Network { get; init; } = NetworkCollectorOptions.Default;
+
     /// <summary>Take before/after system inventories around the session.</summary>
     public bool CaptureSnapshots { get; init; } = true;
 
@@ -157,7 +165,14 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         }
 
         if (_collectors.Count == 0)
+        {
             _collectors.Add(new KernelCollector(_options.Kernel));
+
+            // A separate session: the kernel session accepts only kernel keywords, so
+            // the user-mode name-resolution and HTTP providers cannot share it.
+            if (_options.CollectNetworkMetadata)
+                _collectors.Add(new NetworkCollector(_options.Network));
+        }
 
         foreach (ICollector collector in _collectors)
         {

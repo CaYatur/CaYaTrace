@@ -80,11 +80,14 @@ This is an early release. What is real today versus designed is tracked honestly
 | Registry before → after value transitions | ✅ working |
 | Before/after system inventories + diff | ✅ working |
 | Network flows with process attribution (kernel) | ✅ working |
+| DNS queries and answers, attributed to the requesting process | ✅ working |
+| TLS handshake metadata (Schannel) | ✅ working |
+| Full URLs from WinINet / WinHTTP applications | ✅ working |
 | Session storage, JSONL journal, data-quality reporting | ✅ working |
 | Removal planner, `.ctpkg` packages, remediation runner | ✅ working |
 | CLI (`trace`, `report`, `remediate`) | ✅ working |
 | Workbench UI (WebView2 + CaYaDev theme) | 🚧 in progress |
-| DNS / TLS metadata, HTTP(S) URL capture | 📐 designed — [architecture](docs/ARCHITECTURE.md#4-evidence-sources-and-why-provenance-is-first-class) |
+| Packet capture via Pktmon | 📐 designed |
 | Intercepting proxy for full request bodies (opt-in) | 📐 designed |
 | Multi-VM comparison and path templating | 📐 designed |
 | VirusTotal and Ollama integration | 📐 designed |

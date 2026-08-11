@@ -83,11 +83,14 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Kayıt defteri önce → sonra değer geçişleri | ✅ çalışıyor |
 | Öncesi/sonrası sistem envanteri ve farkı | ✅ çalışıyor |
 | Sürece ilişkilendirilmiş ağ akışları (çekirdek) | ✅ çalışıyor |
+| DNS sorguları ve yanıtları, isteyen sürece ilişkilendirilmiş | ✅ çalışıyor |
+| TLS el sıkışma meta verisi (Schannel) | ✅ çalışıyor |
+| WinINet / WinHTTP uygulamalarından tam URL'ler | ✅ çalışıyor |
 | Oturum depolama, JSONL günlüğü, veri kalitesi raporu | ✅ çalışıyor |
 | Kaldırma planlayıcı, `.ctpkg` paketleri, kaldırma motoru | ✅ çalışıyor |
 | Komut satırı (`trace`, `report`, `remediate`) | ✅ çalışıyor |
 | Çalışma tezgâhı arayüzü (WebView2 + CaYaDev teması) | 🚧 devam ediyor |
-| DNS / TLS meta verisi, HTTP(S) URL yakalama | 📐 tasarlandı |
+| Pktmon ile paket yakalama | 📐 tasarlandı |
 | Tam istek gövdeleri için araya giren proxy (isteğe bağlı) | 📐 tasarlandı |
 | Çoklu VM karşılaştırması ve yol şablonlama | 📐 tasarlandı |
 | VirusTotal ve Ollama entegrasyonu | 📐 tasarlandı |

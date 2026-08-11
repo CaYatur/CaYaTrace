@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Windows-only by design: the product targets net8.0-windows and the tests
+    # exercise real path and registry canonicalization against the running OS.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore CaYaTrace.sln
+
+      - name: Build
+        run: dotnet build CaYaTrace.sln --no-restore -c Release
+
+      - name: Test
+        # The correlation layer is free of ETW and SQLite dependencies precisely so
+        # it can be verified here without elevation.
+        run: dotnet test tests/CaYaTrace.Tests/CaYaTrace.Tests.csproj --no-build -c Release --verbosity normal
+
+      - name: Publish portable executable
+        run: >
+          dotnet publish src/CaYaTrace.App/CaYaTrace.App.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true
+          -o dist
+
+      - name: Smoke test the published binary
+        # Catches the class of failure a compile cannot: a trimmed or mis-bundled
+        # host that builds fine and dies on launch.
+        run: |
+          ./dist/CaYaTrace.exe version
+          ./dist/CaYaTrace.exe help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CaYaTrace-win-x64
+          path: dist/CaYaTrace.exe
+          retention-days: 14

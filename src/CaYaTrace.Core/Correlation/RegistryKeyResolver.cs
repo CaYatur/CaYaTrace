@@ -42,9 +42,32 @@ public sealed class RegistryKeyResolver
         _userSidOverride = userSidOverride;
     }
 
+    private long _absolute;
+    private long _partial;
+
     public HandleNameMap Kcbs => _kcb;
 
-    public double HitRate => _kcb.HitRate;
+    /// <summary>
+    /// Fraction of operations resolved to a full hive-rooted key path.
+    /// </summary>
+    /// <remarks>
+    /// A relative fragment such as <c>Software\Example</c> counts against this even though
+    /// <see cref="Resolve"/> returns it: the fragment is worth showing next to its
+    /// operation, but it cannot be searched, compared across machines, or acted on by a
+    /// removal plan, so treating it as a success would overstate what the session holds.
+    /// </remarks>
+    public double HitRate
+    {
+        get
+        {
+            long absolute = Interlocked.Read(ref _absolute);
+            long partial = Interlocked.Read(ref _partial);
+            return absolute + partial == 0 ? 1.0 : (double)absolute / (absolute + partial);
+        }
+    }
+
+    /// <summary>Operations that resolved only to a relative fragment.</summary>
+    public long PartiallyResolved => Interlocked.Read(ref _partial);
 
     /// <summary>
     /// Records the full path announced by <c>KCBCreate</c> or by a rundown event.
@@ -75,26 +98,52 @@ public sealed class RegistryKeyResolver
     {
         // Some builds hand out an absolute name; take it and skip the KCB entirely.
         if (!string.IsNullOrEmpty(relativeName) && IsAbsolute(relativeName))
-            return RegistryPath.Normalize(relativeName, _userSidOverride);
-
-        bool haveBase = keyHandle != 0 && _kcb.TryGet(keyHandle, out string basePath);
-        if (!haveBase)
         {
-            // Better to return a partial answer than nothing: a relative name still
-            // tells the analyst which value moved, and the UI marks it unresolved.
-            return string.IsNullOrEmpty(relativeName)
-                ? string.Empty
-                : RegistryPath.Normalize(relativeName, _userSidOverride);
+            Interlocked.Increment(ref _absolute);
+            return RegistryPath.Normalize(relativeName, _userSidOverride);
         }
 
-        _kcb.TryGet(keyHandle, out basePath);
+        if (keyHandle != 0 && _kcb.TryGet(keyHandle, out string basePath))
+        {
+            Interlocked.Increment(ref _absolute);
+            if (string.IsNullOrEmpty(relativeName)) return basePath;
+            string tail = relativeName.Trim('\\');
+            return tail.Length == 0 ? basePath : $"{basePath}\\{tail}";
+        }
 
-        if (string.IsNullOrEmpty(relativeName))
-            return basePath;
-
-        string tail = relativeName.Trim('\\');
-        return tail.Length == 0 ? basePath : $"{basePath}\\{tail}";
+        // Better to return a fragment than nothing — it still tells the analyst which
+        // value moved — but it is counted as partial, not as a resolution.
+        Interlocked.Increment(ref _partial);
+        return string.IsNullOrEmpty(relativeName)
+            ? string.Empty
+            : RegistryPath.Normalize(relativeName, _userSidOverride);
     }
+
+    /// <summary>
+    /// Resolves without recording a measurement, for callers that will retry once the
+    /// key control block has been announced.
+    /// </summary>
+    public bool TryResolve(ulong keyHandle, string? relativeName, out string full)
+    {
+        full = string.Empty;
+        if (!string.IsNullOrEmpty(relativeName) && IsAbsolute(relativeName))
+        {
+            full = RegistryPath.Normalize(relativeName, _userSidOverride);
+            return true;
+        }
+
+        if (keyHandle == 0 || !_kcb.TryGet(keyHandle, out string basePath)) return false;
+
+        string tail = relativeName?.Trim('\\') ?? string.Empty;
+        full = tail.Length == 0 ? basePath : $"{basePath}\\{tail}";
+        return true;
+    }
+
+    /// <summary>Records that an operation resolved, for callers using <see cref="TryResolve"/>.</summary>
+    public void NoteResolved() => Interlocked.Increment(ref _absolute);
+
+    /// <summary>Records that an operation never resolved to a full path.</summary>
+    public void NotePartial() => Interlocked.Increment(ref _partial);
 
     /// <summary>
     /// Applies a key rename so operations under the old KCB report the new path.

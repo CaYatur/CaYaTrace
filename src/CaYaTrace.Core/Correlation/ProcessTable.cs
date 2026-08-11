@@ -55,14 +55,22 @@ public sealed class ProcessTable
             }
             else
             {
-                // A weak-keyed node may already be here from a rundown or from an
-                // event seen before the start event. Unify instead of duplicating.
+                // A weak-keyed node may already be here from a rundown, from a
+                // snapshot, or from a process we launched suspended before the kernel
+                // announced it. Unify instead of duplicating.
                 ProcessNode? match = generations.FirstOrDefault(g => g.Key == node.Key);
                 if (match is not null)
                 {
                     Merge(match, node);
-                    if (node.Key.IsStrong)
-                        _byStartKey[node.Key.StartKey] = match;
+
+                    // Upgrade the placeholder to the authoritative identity. Skipping
+                    // this leaves two records for one process: the placeholder holding
+                    // the scope flag, and the kernel-keyed one holding all the actual
+                    // events — which silently empties the tree, because every event
+                    // then belongs to a process nobody marked in scope.
+                    if (node.Key.IsStrong && !match.Key.IsStrong)
+                        UpgradeKeyLocked(match, node.Key);
+
                     return match;
                 }
             }
@@ -259,6 +267,44 @@ public sealed class ProcessTable
             MarkScope(key, $"adopted:{reason}");
             return true;
         }
+    }
+
+    /// <summary>
+    /// Replaces a node's placeholder key with the kernel-supplied one and repoints
+    /// every reference to it.
+    /// </summary>
+    /// <remarks>
+    /// The node object itself is kept, so anything already recorded against it —
+    /// scope, image path, command line, children — survives. What must be rewritten
+    /// are the references held <em>by key</em> elsewhere: the parent's child list and
+    /// each child's parent pointer. Leaving those pointing at the old key would break
+    /// the tree in a way that looks like missing parentage rather than a bug.
+    /// </remarks>
+    private void UpgradeKeyLocked(ProcessNode node, ProcessKey authoritative)
+    {
+        ProcessKey previous = node.Key;
+        node.Key = authoritative;
+        _byStartKey[authoritative.StartKey] = node;
+
+        if (node.ParentKey != ProcessKey.None)
+        {
+            ProcessNode? parent = Get(node.ParentKey);
+            if (parent is not null)
+            {
+                int index = parent.Children.IndexOf(previous);
+                if (index >= 0) parent.Children[index] = authoritative;
+                else if (!parent.Children.Contains(authoritative)) parent.Children.Add(authoritative);
+            }
+        }
+
+        foreach (ProcessKey childKey in node.Children)
+        {
+            ProcessNode? child = Get(childKey);
+            if (child is not null) child.ParentKey = authoritative;
+        }
+
+        foreach (uint tid in _threadOwners.Where(kv => kv.Value == previous).Select(kv => kv.Key).ToList())
+            _threadOwners[tid] = authoritative;
     }
 
     private void LinkToParent(ProcessNode node)

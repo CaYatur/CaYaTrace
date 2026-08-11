@@ -31,7 +31,15 @@ public enum IntegrityLevel
 /// </summary>
 public sealed class ProcessNode
 {
-    public required ProcessKey Key { get; init; }
+    /// <summary>
+    /// Stable identity. Settable because a node can be created before the kernel has
+    /// told us its start key — a process launched suspended, or one seen through a
+    /// snapshot — and must be <em>upgraded</em> in place when the authoritative key
+    /// arrives. Replacing the node instead would strand everything already attached
+    /// to it, including its scope flag. Only <see cref="Correlation.ProcessTable"/>
+    /// should assign this, so its indexes stay consistent.
+    /// </summary>
+    public required ProcessKey Key { get; set; }
 
     public uint Pid => Key.Pid;
 

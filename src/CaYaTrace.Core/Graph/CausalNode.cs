@@ -61,9 +61,19 @@ public sealed class CausalNode
     /// <summary>Number of observations collapsed into this node.</summary>
     public int EventCount { get; set; }
 
+    /// <summary>Bytes sent over the network.</summary>
     public long BytesSent { get; set; }
 
+    /// <summary>Bytes received over the network.</summary>
     public long BytesReceived { get; set; }
+
+    /// <summary>
+    /// Bytes written to disk. Kept apart from <see cref="BytesSent"/> rather than
+    /// summed into it: rolling file I/O up under a "sent" total makes a process that
+    /// wrote 41 MB to a local cache read as one that uploaded 41 MB, which is a
+    /// materially different accusation.
+    /// </summary>
+    public long BytesWritten { get; set; }
 
     public DateTimeOffset FirstSeen { get; set; }
 

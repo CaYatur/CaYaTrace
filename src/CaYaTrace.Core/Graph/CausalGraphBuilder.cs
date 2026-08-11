@@ -269,7 +269,7 @@ public sealed class CausalGraphBuilder
             }
 
             node.Absorb(o);
-            node.BytesSent += o.Bytes;
+            AccumulateBytes(node, o);
             AddValueChangeFacts(node, o);
         }
 
@@ -516,6 +516,40 @@ public sealed class CausalGraphBuilder
         }
     }
 
+    /// <summary>
+    /// Routes an observation's byte count to the right total, or to none.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Observation.Bytes"/> means different things per category and only some
+    /// of them are meaningfully additive. A module load carries the image's size on
+    /// disk — summing 28 DLL sizes into one figure and labelling it "sent" invented a
+    /// 30 MB transfer out of a process that loaded ordinary system libraries. Sizes
+    /// that describe a static object are recorded as a fact on the node instead.
+    /// </remarks>
+    private static void AccumulateBytes(CausalNode node, Observation o)
+    {
+        if (o.Bytes <= 0) return;
+
+        switch (o.Category)
+        {
+            case EventCategory.File:
+                node.BytesWritten += o.Bytes;
+                break;
+
+            case EventCategory.Network:
+            case EventCategory.Http:
+                if (o.Action is EventAction.Receive or EventAction.HttpResponse) node.BytesReceived += o.Bytes;
+                else node.BytesSent += o.Bytes;
+                break;
+
+            case EventCategory.Module:
+                // A size, not a transfer. Shown once, not accumulated.
+                if (node.Facts.Count == 0)
+                    node.Facts.Add(new("image size", FormatBytes(o.Bytes)));
+                break;
+        }
+    }
+
     private static void AddValueChangeFacts(CausalNode node, Observation o)
     {
         // Only record the first transition; a value written in a loop would otherwise
@@ -567,6 +601,7 @@ public sealed class CausalGraphBuilder
             node.EventCount += child.EventCount;
             node.BytesSent += child.BytesSent;
             node.BytesReceived += child.BytesReceived;
+            node.BytesWritten += child.BytesWritten;
             if (child.FirstSeen != default && (node.FirstSeen == default || child.FirstSeen < node.FirstSeen))
                 node.FirstSeen = child.FirstSeen;
             if (child.LastSeen > node.LastSeen) node.LastSeen = child.LastSeen;

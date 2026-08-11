@@ -20,6 +20,7 @@ public static class RegistryPath
     private const string NativeMachine = @"\REGISTRY\MACHINE";
     private const string NativeUser = @"\REGISTRY\USER";
     private const string NativeRoot = @"\REGISTRY";
+    private const string NativeSilo = @"\REGISTRY\WC";
 
     private static readonly Lazy<string?> CurrentUserSid = new(() =>
     {
@@ -58,6 +59,32 @@ public static class RegistryPath
 
         if (!path.StartsWith(NativeRoot, StringComparison.OrdinalIgnoreCase))
             return path;
+
+        // Windows may present the registry through a container silo namespace:
+        // \REGISTRY\WC\Silo<guid>user_sid\Software\... rather than
+        // \REGISTRY\USER\<sid>\Software\... . Observed on Windows 11 26H1, where the
+        // per-user hive of an isolated app arrives in this form. Left untranslated it
+        // produces paths that look absolute but match nothing, so a removal plan built
+        // from them would silently target keys that do not exist.
+        if (path.StartsWith(NativeSilo, StringComparison.OrdinalIgnoreCase)
+            && (path.Length == NativeSilo.Length || path[NativeSilo.Length] == '\\'))
+        {
+            string rest = path[NativeSilo.Length..].TrimStart('\\');
+            if (rest.Length == 0) return "HKLM";
+
+            int slash = rest.IndexOf('\\');
+            string silo = slash < 0 ? rest : rest[..slash];
+            string tail = slash < 0 ? string.Empty : rest[slash..];
+
+            // The silo segment carries the hive it stands in for as a suffix.
+            if (silo.EndsWith("user_sid", StringComparison.OrdinalIgnoreCase)) return "HKCU" + tail;
+            if (silo.EndsWith("user", StringComparison.OrdinalIgnoreCase)) return "HKCU" + tail;
+            if (silo.EndsWith("machine", StringComparison.OrdinalIgnoreCase)) return "HKLM" + tail;
+
+            // An unrecognised silo is kept verbatim rather than guessed at: a wrong
+            // hive is worse than an obviously unresolved one.
+            return path;
+        }
 
         if (path.StartsWith(NativeMachine, StringComparison.OrdinalIgnoreCase)
             && (path.Length == NativeMachine.Length || path[NativeMachine.Length] == '\\'))

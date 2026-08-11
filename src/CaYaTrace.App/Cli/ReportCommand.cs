@@ -280,6 +280,9 @@ public static class TreeRenderer
         if (node.Kind == CausalNodeKind.ActionGroup && node.EventCount > 0)
             sb.Append(CultureInfo.InvariantCulture, $"  [{node.EventCount:N0}]");
 
+        if (node.BytesWritten > 0)
+            sb.Append("  ").Append(FormatBytes(node.BytesWritten)).Append(" written");
+
         if (node.BytesSent > 0 || node.BytesReceived > 0)
         {
             sb.Append("  ")

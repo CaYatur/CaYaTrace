@@ -252,14 +252,27 @@ public sealed class SessionStore : IDisposable
         }
 
         // Rebuild child links; they are derivable and not worth a second table.
-        var byKey = result.ToDictionary(static p => p.Key);
-        foreach (ProcessNode p in result)
+        //
+        // Built with TryAdd rather than ToDictionary because ProcessKey equality
+        // deliberately unifies a kernel-keyed record with a PID-only one, and a
+        // session written before that unification worked can still hold both on disk.
+        // Throwing here would make an old session unreadable; keeping the richer
+        // record and dropping the placeholder degrades gracefully instead.
+        var byKey = new Dictionary<ProcessKey, ProcessNode>(result.Count);
+        var deduped = new List<ProcessNode>(result.Count);
+
+        foreach (ProcessNode node in result.OrderByDescending(static p => p.Key.IsStrong))
+        {
+            if (byKey.TryAdd(node.Key, node)) deduped.Add(node);
+        }
+
+        foreach (ProcessNode p in deduped)
         {
             if (p.ParentKey != ProcessKey.None && byKey.TryGetValue(p.ParentKey, out ProcessNode? parent))
                 parent.Children.Add(p.Key);
         }
 
-        return result;
+        return deduped;
     }
 
     // ------------------------------------------------------------ observations

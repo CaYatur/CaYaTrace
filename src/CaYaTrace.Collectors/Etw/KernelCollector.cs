@@ -473,22 +473,27 @@ public sealed class KernelCollector : ICollector
 
         kernel.FileIOWrite += data =>
         {
-            string path = ctx.Files.Resolve(data.FileObject, data.FileKey, data.FileName);
-            if (path.Length == 0) return;
-
-            ctx.Emit(new Observation
+            var template = new Observation
             {
                 Timestamp = data.TimeStamp,
                 Category = EventCategory.File,
                 Action = EventAction.FileWrite,
                 Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
                 ThreadId = (uint)data.ThreadID,
-                Target = ctx.Paths.Tokenize(path),
                 Bytes = data.IoSize,
                 Source = EvidenceSource.KernelEtw,
                 Confidence = AttributionConfidence.Direct,
                 Status = EventStatus.Success,
-            });
+            };
+
+            if (!ctx.Files.TryResolve(data.FileObject, data.FileKey, data.FileName, out string path))
+            {
+                Defer(ctx, template, data.FileObject, data.FileKey, null, isRegistry: false);
+                return;
+            }
+
+            ctx.Files.NoteResolved();
+            ctx.Emit(template with { Target = ctx.Paths.Tokenize(path) });
         };
 
         if (_options.CollectReads)
@@ -515,21 +520,26 @@ public sealed class KernelCollector : ICollector
 
         kernel.FileIODelete += data =>
         {
-            string path = ctx.Files.Resolve(data.FileObject, data.FileKey, data.FileName);
-            if (path.Length == 0) return;
-
-            ctx.Emit(new Observation
+            var template = new Observation
             {
                 Timestamp = data.TimeStamp,
                 Category = EventCategory.File,
                 Action = EventAction.FileDelete,
                 Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
                 ThreadId = (uint)data.ThreadID,
-                Target = ctx.Paths.Tokenize(path),
                 Source = EvidenceSource.KernelEtw,
                 Confidence = AttributionConfidence.Direct,
                 Status = EventStatus.Success,
-            });
+            };
+
+            if (!ctx.Files.TryResolve(data.FileObject, data.FileKey, data.FileName, out string path))
+            {
+                Defer(ctx, template, data.FileObject, data.FileKey, null, isRegistry: false);
+                return;
+            }
+
+            ctx.Files.NoteResolved();
+            ctx.Emit(template with { Target = ctx.Paths.Tokenize(path) });
         };
 
         kernel.FileIORename += data =>
@@ -595,111 +605,75 @@ public sealed class KernelCollector : ICollector
         kernel.RegistryKCBDelete += data => ctx.Registry.NoteKcbDelete(data.KeyHandle);
 
         kernel.RegistryCreate += data =>
-        {
-            string path = ctx.Registry.Resolve(data.KeyHandle, data.KeyName);
-            if (path.Length == 0) return;
-
-            ctx.Emit(new Observation
-            {
-                Timestamp = data.TimeStamp,
-                Category = EventCategory.Registry,
-                Action = EventAction.KeyCreate,
-                Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
-                ThreadId = (uint)data.ThreadID,
-                Target = path,
-                Source = EvidenceSource.KernelEtw,
-                Confidence = AttributionConfidence.Direct,
-                Status = StatusOf(data.Status),
-            });
-        };
+            EmitRegistry(ctx, data, EventAction.KeyCreate);
 
         kernel.RegistrySetValue += data =>
         {
-            string path = ctx.Registry.Resolve(data.KeyHandle, data.KeyName);
-            if (path.Length == 0) return;
+            var template = new Observation
+            {
+                Timestamp = data.TimeStamp,
+                Category = EventCategory.Registry,
+                Action = EventAction.ValueSet,
+                Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
+                ThreadId = (uint)data.ThreadID,
+                Target2 = string.IsNullOrEmpty(data.ValueName) ? "(Default)" : data.ValueName,
+                Source = EvidenceSource.KernelEtw,
+                Confidence = AttributionConfidence.Direct,
+                Status = StatusOf(data.Status),
+            };
 
-            ProcessKey actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp);
+            // Value data must be read now or not at all: by the time the end-of-session
+            // rundown could name this key, the data may have changed again or the key
+            // may be gone. A deferred write therefore keeps its name but loses its
+            // before/after data — which is why the value capture is attempted eagerly.
+            if (!ctx.Registry.TryResolve(data.KeyHandle, data.KeyName, out string path))
+            {
+                Defer(ctx, template, data.KeyHandle, 0, data.KeyName, isRegistry: true);
+                return;
+            }
+
+            ctx.Registry.NoteResolved();
 
             // The provider reports that a value was set but never the data. Reading it
             // back is the only way to answer "changed from what, to what" — see
             // RegistryValueCapture for why the answer is best-effort.
             (string? before, string? after) = _valueCapture?.Capture(path, data.ValueName) ?? (null, null);
 
-            ctx.Emit(new Observation
-            {
-                Timestamp = data.TimeStamp,
-                Category = EventCategory.Registry,
-                Action = EventAction.ValueSet,
-                Actor = actor,
-                ThreadId = (uint)data.ThreadID,
-                Target = path,
-                Target2 = string.IsNullOrEmpty(data.ValueName) ? "(Default)" : data.ValueName,
-                OldValue = before,
-                NewValue = after,
-                Source = EvidenceSource.KernelEtw,
-                Confidence = AttributionConfidence.Direct,
-                Status = StatusOf(data.Status),
-            });
+            ctx.Emit(template with { Target = path, OldValue = before, NewValue = after });
         };
 
         kernel.RegistryDeleteValue += data =>
         {
-            string path = ctx.Registry.Resolve(data.KeyHandle, data.KeyName);
-            if (path.Length == 0) return;
-
-            ctx.Emit(new Observation
+            var template = new Observation
             {
                 Timestamp = data.TimeStamp,
                 Category = EventCategory.Registry,
                 Action = EventAction.ValueDelete,
                 Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
                 ThreadId = (uint)data.ThreadID,
-                Target = path,
                 Target2 = string.IsNullOrEmpty(data.ValueName) ? "(Default)" : data.ValueName,
+                Source = EvidenceSource.KernelEtw,
+                Confidence = AttributionConfidence.Direct,
+                Status = StatusOf(data.Status),
+            };
+
+            if (!ctx.Registry.TryResolve(data.KeyHandle, data.KeyName, out string path))
+            {
+                Defer(ctx, template, data.KeyHandle, 0, data.KeyName, isRegistry: true);
+                return;
+            }
+
+            ctx.Registry.NoteResolved();
+            ctx.Emit(template with
+            {
+                Target = path,
                 OldValue = _valueCapture?.ReadCurrent(path, data.ValueName),
-                Source = EvidenceSource.KernelEtw,
-                Confidence = AttributionConfidence.Direct,
-                Status = StatusOf(data.Status),
             });
         };
 
-        kernel.RegistryDelete += data =>
-        {
-            string path = ctx.Registry.Resolve(data.KeyHandle, data.KeyName);
-            if (path.Length == 0) return;
+        kernel.RegistryDelete += data => EmitRegistry(ctx, data, EventAction.KeyDelete);
 
-            ctx.Emit(new Observation
-            {
-                Timestamp = data.TimeStamp,
-                Category = EventCategory.Registry,
-                Action = EventAction.KeyDelete,
-                Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
-                ThreadId = (uint)data.ThreadID,
-                Target = path,
-                Source = EvidenceSource.KernelEtw,
-                Confidence = AttributionConfidence.Direct,
-                Status = StatusOf(data.Status),
-            });
-        };
-
-        kernel.RegistrySetInformation += data =>
-        {
-            string path = ctx.Registry.Resolve(data.KeyHandle, data.KeyName);
-            if (path.Length == 0) return;
-
-            ctx.Emit(new Observation
-            {
-                Timestamp = data.TimeStamp,
-                Category = EventCategory.Registry,
-                Action = EventAction.KeySetSecurity,
-                Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
-                ThreadId = (uint)data.ThreadID,
-                Target = path,
-                Source = EvidenceSource.KernelEtw,
-                Confidence = AttributionConfidence.Direct,
-                Status = StatusOf(data.Status),
-            });
-        };
+        kernel.RegistrySetInformation += data => EmitRegistry(ctx, data, EventAction.KeySetSecurity);
 
         if (_options.CollectReads)
         {
@@ -720,6 +694,136 @@ public sealed class KernelCollector : ICollector
                     Status = StatusOf(data.Status),
                 });
             };
+        }
+    }
+
+    /// <summary>
+    /// Emits a registry operation, parking it if its key has no name yet.
+    /// </summary>
+    private void EmitRegistry(CollectorContext ctx, RegistryTraceData data, EventAction action)
+    {
+        var template = new Observation
+        {
+            Timestamp = data.TimeStamp,
+            Category = EventCategory.Registry,
+            Action = action,
+            Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
+            ThreadId = (uint)data.ThreadID,
+            Source = EvidenceSource.KernelEtw,
+            Confidence = AttributionConfidence.Direct,
+            Status = StatusOf(data.Status),
+        };
+
+        if (!ctx.Registry.TryResolve(data.KeyHandle, data.KeyName, out string path))
+        {
+            Defer(ctx, template, data.KeyHandle, 0, data.KeyName, isRegistry: true);
+            return;
+        }
+
+        ctx.Registry.NoteResolved();
+        ctx.Emit(template with { Target = path });
+    }
+
+    // ------------------------------------------------- deferred resolution
+
+    /// <summary>
+    /// An operation whose object had no name yet, held until one arrives.
+    /// </summary>
+    private readonly record struct Deferred(
+        Observation Template, ulong Handle, ulong SecondaryHandle, string? RelativeName, bool IsRegistry);
+
+    /// <summary>
+    /// Operations parked awaiting a name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This exists because of a timing property of the kernel providers that is easy to
+    /// miss and quietly halves the tool's output. The file-name and key-control-block
+    /// <em>rundowns</em> — the events that announce what every already-open handle refers to —
+    /// are delivered when the session <b>stops</b>, not when it starts. Measured on a live
+    /// system: 68,258 <c>FileIO/FileRundown</c> and 6,718 <c>Registry/KCBRundownEnd</c> events, all
+    /// at the end, and not a single <c>Registry/KCBCreate</c> during the run.
+    /// </para>
+    /// <para>
+    /// So during collection only objects opened <em>after</em> we started can be named — which
+    /// happens to cover the subject we launch suspended, but not the handles it inherited
+    /// or that already existed. Resolving eagerly and discarding the rest threw away
+    /// roughly 80% of file operations and 95% of registry operations.
+    /// </para>
+    /// <para>
+    /// Parking them and re-resolving once the rundown has been consumed recovers that.
+    /// The buffer is bounded: past the cap, operations are counted as unresolved rather
+    /// than allowed to grow without limit.
+    /// </para>
+    /// </remarks>
+    private readonly List<Deferred> _deferred = new();
+
+    /// <summary>
+    /// Roughly 40 MB at the observed average size. Generous, because the alternative is
+    /// discarding evidence, but finite.
+    /// </summary>
+    private const int MaxDeferred = 200_000;
+
+    private long _deferredDropped;
+
+    private void Defer(CollectorContext ctx, Observation template, ulong handle, ulong secondary, string? relative, bool isRegistry)
+    {
+        // ETW delivers on a single processing thread per session, so no lock is needed
+        // between here and the flush, which runs after that thread has finished.
+        if (_deferred.Count >= MaxDeferred)
+        {
+            _deferredDropped++;
+            if (isRegistry) ctx.Registry.NotePartial();
+            return;
+        }
+
+        _deferred.Add(new Deferred(template, handle, secondary, relative, isRegistry));
+    }
+
+    /// <summary>
+    /// Re-resolves everything parked, now that the end-of-session rundown has populated
+    /// the name maps. Runs after trace processing has finished.
+    /// </summary>
+    private void FlushDeferred(CollectorContext ctx)
+    {
+        int recovered = 0;
+
+        foreach (Deferred item in _deferred)
+        {
+            bool ok = item.IsRegistry
+                ? ctx.Registry.TryResolve(item.Handle, item.RelativeName, out string path)
+                : ctx.Files.TryResolve(item.Handle, item.SecondaryHandle, null, out path);
+
+            if (!ok)
+            {
+                if (item.IsRegistry) ctx.Registry.NotePartial();
+                else ctx.Files.NoteUnresolved();
+                continue;
+            }
+
+            if (item.IsRegistry) ctx.Registry.NoteResolved();
+            else ctx.Files.NoteResolved();
+
+            ctx.Emit(item.Template with
+            {
+                Target = item.IsRegistry ? path : ctx.Paths.Tokenize(path),
+            });
+            recovered++;
+        }
+
+        int parked = _deferred.Count;
+        _deferred.Clear();
+
+        if (parked > 0)
+        {
+            ctx.Store.LogQuality(Name, "info",
+                $"resolved {recovered:N0} of {parked:N0} operations from the end-of-session rundown");
+        }
+
+        if (_deferredDropped > 0)
+        {
+            ctx.Store.LogQuality(Name, "warning",
+                $"{_deferredDropped:N0} operations were discarded unresolved because the deferred buffer was full");
         }
     }
 
@@ -849,13 +953,20 @@ public sealed class KernelCollector : ICollector
     {
         _stopping = true;
 
+        // EventsLost must be read while the session is still registered. After Stop the
+        // underlying query fails with 0x80071069, so reading it later would replace a
+        // real number with an exception.
         if (_ctx is not null && _session is not null)
         {
-            _ctx.Quality.EventsLost += _session.EventsLost;
-            if (_session.EventsLost > 0)
+            int lost = 0;
+            try { lost = _session.EventsLost; }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException) { }
+
+            _ctx.Quality.EventsLost += lost;
+            if (lost > 0)
             {
                 _ctx.Store.LogQuality(Name, "warning",
-                    $"{_session.EventsLost} events lost to buffer pressure; " +
+                    $"{lost} events lost to buffer pressure; " +
                     "increase BufferSizeMB or narrow the collected keywords");
             }
         }
@@ -865,11 +976,18 @@ public sealed class KernelCollector : ICollector
 
         if (_processing is not null)
         {
-            // Source.Process() returns once the session stops; bound the wait so a
-            // wedged provider cannot hang shutdown.
-            await Task.WhenAny(_processing, Task.Delay(TimeSpan.FromSeconds(10), cancellationToken))
+            // Source.Process() returns once the session stops — and stopping is what
+            // makes the kernel emit the file-name and key-control-block rundowns. The
+            // wait is therefore not just for tidiness: those events are what make the
+            // deferred operations resolvable. The timeout is generous because a busy
+            // machine can produce tens of thousands of rundown records.
+            await Task.WhenAny(_processing, Task.Delay(TimeSpan.FromSeconds(60), cancellationToken))
                 .ConfigureAwait(false);
         }
+
+        // Now that the rundown has been consumed, everything parked for want of a name
+        // gets a second chance.
+        if (_ctx is not null) FlushDeferred(_ctx);
     }
 
     public async ValueTask DisposeAsync()

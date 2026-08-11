@@ -306,6 +306,12 @@ function renderNode(node, depth) {
   const count = Number(p(node, 'EventCount') || 0);
   if (kind === 1 && count > 0) row.appendChild(badge(count.toLocaleString(), ''));
 
+  // Disk and network totals are shown separately. Folding file writes into a "sent"
+  // figure would make a process that wrote to a local cache look like one that
+  // uploaded the same volume.
+  const written = Number(p(node, 'BytesWritten') || 0);
+  if (written) row.appendChild(badge(`${formatBytes(written)} written`, 'bytes'));
+
   const sent = Number(p(node, 'BytesSent') || 0);
   const recv = Number(p(node, 'BytesReceived') || 0);
   if (sent || recv) row.appendChild(badge(`${formatBytes(sent)} ↑ ${formatBytes(recv)} ↓`, 'bytes'));
@@ -376,6 +382,7 @@ function renderDetail(node) {
     ['events', Number(p(node, 'EventCount') || 0).toLocaleString()],
     ['first seen', first ? new Date(first).toLocaleString() : null],
     ['last seen', last ? new Date(last).toLocaleString() : null],
+    ['written to disk', Number(p(node, 'BytesWritten')) ? formatBytes(p(node, 'BytesWritten')) : null],
     ['sent', Number(p(node, 'BytesSent')) ? formatBytes(p(node, 'BytesSent')) : null],
     ['received', Number(p(node, 'BytesReceived')) ? formatBytes(p(node, 'BytesReceived')) : null],
     ['evidence rows', (p(node, 'Evidence') || []).length || null],

@@ -45,16 +45,57 @@ public sealed class FileObjectResolver
     public HandleNameMap FileObjects => _byFileObject;
     public HandleNameMap FileKeys => _byFileKey;
 
-    /// <summary>Combined hit rate across both maps, for the data-quality panel.</summary>
+    private long _named;
+    private long _unnamed;
+
+    /// <summary>
+    /// Fraction of operations that produced a usable path.
+    /// </summary>
+    /// <remarks>
+    /// Measured on the <em>outcome</em>, not on internal map lookups. Counting map hits
+    /// understated this badly: when the event already carries a resolved name we return
+    /// it without consulting either map, so a successful resolution registered as
+    /// neither a hit nor a miss while every fallback attempt registered as a miss. The
+    /// result was a session reporting "99.8% of file operations unresolved" while the
+    /// stored evidence held fully resolved paths — a metric that would have sent an
+    /// analyst hunting a non-existent collection failure.
+    /// </remarks>
     public double HitRate
     {
         get
         {
-            long hits = _byFileObject.Hits + _byFileKey.Hits;
-            long misses = _byFileObject.Misses + _byFileKey.Misses;
-            return hits + misses == 0 ? 1.0 : (double)hits / (hits + misses);
+            long named = Interlocked.Read(ref _named);
+            long unnamed = Interlocked.Read(ref _unnamed);
+            return named + unnamed == 0 ? 1.0 : (double)named / (named + unnamed);
         }
     }
+
+    /// <summary>Operations whose object could not be named, and were therefore dropped.</summary>
+    public long Unresolved => Interlocked.Read(ref _unnamed);
+
+    /// <summary>
+    /// Resolves without recording a measurement, for callers that will retry once the
+    /// end-of-session rundown has announced the missing names. Counting a failure here
+    /// as well as on the retry would report every deferred operation as two failures.
+    /// </summary>
+    public bool TryResolve(ulong fileObject, ulong fileKey, string? inlineName, out string path)
+    {
+        if (!string.IsNullOrEmpty(inlineName))
+        {
+            string direct = _paths.Normalize(inlineName);
+            if (direct.Length > 0 && !LooksLikeBarePointer(direct)) { path = direct; return true; }
+        }
+
+        if (fileObject != 0 && _byFileObject.TryGet(fileObject, out path)) return true;
+        if (fileKey != 0 && _byFileKey.TryGet(fileKey, out path)) return true;
+
+        path = string.Empty;
+        return false;
+    }
+
+    public void NoteResolved() => Interlocked.Increment(ref _named);
+
+    public void NoteUnresolved() => Interlocked.Increment(ref _unnamed);
 
     /// <summary>Records the name announced by a create/open event.</summary>
     public void NoteOpen(ulong fileObject, ulong fileKey, string? name)
@@ -100,19 +141,31 @@ public sealed class FileObjectResolver
     /// </summary>
     public string Resolve(ulong fileObject, ulong fileKey, string? inlineName = null)
     {
+        // The provider sometimes carries the name already, resolved by the trace
+        // reader's own bookkeeping. That is a successful resolution and counts as one.
         if (!string.IsNullOrEmpty(inlineName))
         {
             string direct = _paths.Normalize(inlineName);
             if (direct.Length > 0 && !LooksLikeBarePointer(direct))
+            {
+                Interlocked.Increment(ref _named);
                 return direct;
+            }
         }
 
         if (fileObject != 0 && _byFileObject.TryGet(fileObject, out string byObject))
+        {
+            Interlocked.Increment(ref _named);
             return byObject;
+        }
 
         if (fileKey != 0 && _byFileKey.TryGet(fileKey, out string byKey))
+        {
+            Interlocked.Increment(ref _named);
             return byKey;
+        }
 
+        Interlocked.Increment(ref _unnamed);
         return string.Empty;
     }
 

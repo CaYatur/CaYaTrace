@@ -252,11 +252,15 @@ public sealed class SessionOrchestrator : IAsyncDisposable
     {
         if (_ctx is null || Session is null) return;
 
-        // A suspended process has not yet produced a kernel start event, so seed it
-        // here. When the real event arrives it unifies with this node by PID.
+        // A suspended process has not yet produced a kernel start event, so seed a
+        // placeholder keyed on PID alone. Deliberately *without* a creation time:
+        // stamping DateTimeOffset.UtcNow here would never match the timestamp the
+        // kernel later reports, the two records would fail to unify, and the scope
+        // flag would end up on this placeholder while every real event attached to
+        // the kernel-keyed node — emptying the tree without any error.
         var node = new ProcessNode
         {
-            Key = ProcessKey.FromCreateTime(target.Pid, DateTimeOffset.UtcNow),
+            Key = new ProcessKey(target.Pid, 0, 0),
             ImagePath = _ctx.Paths.Normalize(_options.TargetPath),
             CommandLine = _options.TargetArguments,
             StartTime = DateTimeOffset.UtcNow,
@@ -338,6 +342,13 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         });
 
         await _sink.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        // The root's identity may have been upgraded from a PID-only placeholder to
+        // the kernel's start key while collection ran, so re-read it rather than
+        // persisting the key we guessed at launch.
+        ProcessNode? root = _ctx.Processes.Snapshot()
+            .FirstOrDefault(static p => p.ScopeReason == "root");
+        if (root is not null) Session.RootProcess = root.Key;
 
         // Processes and flows are written after collection so the stored rows reflect
         // every late-arriving fact — exit codes, hashes, resolved hostnames.

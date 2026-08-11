@@ -164,68 +164,76 @@ public sealed class SnapshotEngine
     /// </remarks>
     public int AttributeFromLiveEvents()
     {
-        var liveTargets = new Dictionary<string, (ProcessKey Actor, DateTimeOffset When)>(StringComparer.OrdinalIgnoreCase);
+        var exact = new Dictionary<string, ProcessKey>(StringComparer.OrdinalIgnoreCase);
+
+        // Secondary index on path segments. A service snapshot row is keyed by the
+        // bare service name, while the live event that created it wrote under
+        // HKLM\SYSTEM\CurrentControlSet\Services\<name>. Indexing segments once turns
+        // that fallback from a scan of every live target into a dictionary hit —
+        // on a real installer the two sets are both five figures.
+        var bySegment = new Dictionary<string, ProcessKey>(StringComparer.OrdinalIgnoreCase);
 
         foreach (Observation live in _ctx.Store.Query(new Storage.ObservationQuery
                  {
                      Categories = new List<EventCategory> { EventCategory.Registry, EventCategory.File },
                      OriginId = _ctx.OriginId ?? string.Empty,
-                 }))
+                 }).ToList())
         {
             if (live.Actor == ProcessKey.None || live.Source == EvidenceSource.SnapshotDiff) continue;
+
             string key = live.Target2 is { Length: > 0 } && live.Category == EventCategory.Registry
                 ? $"{live.Target}::{live.Target2}"
                 : live.Target;
-            liveTargets.TryAdd(key, (live.Actor, live.Timestamp));
+            exact.TryAdd(key, live.Actor);
+
+            foreach (string segment in live.Target.Split('\\', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (segment.Length >= 3) bySegment.TryAdd(segment, live.Actor);
+            }
         }
 
+        // The diff rows are materialized before any write: the sink's background
+        // writer commits on the same connection this reader is streaming from, and a
+        // commit mid-enumeration can invalidate the open reader.
+        List<Observation> pending = _ctx.Store
+            .Query(new Storage.ObservationQuery { OriginId = _ctx.OriginId ?? string.Empty })
+            .Where(static o => o.Source == EvidenceSource.SnapshotDiff && o.Actor == ProcessKey.None)
+            .ToList();
+
         int attributed = 0;
-        var updates = new List<Observation>();
-
-        foreach (Observation diff in _ctx.Store.Query(new Storage.ObservationQuery
-                 {
-                     OriginId = _ctx.OriginId ?? string.Empty,
-                 }))
+        foreach (Observation diff in pending)
         {
-            if (diff.Source != EvidenceSource.SnapshotDiff || diff.Actor != ProcessKey.None) continue;
+            if (!TryMatch(exact, bySegment, diff.Target, out ProcessKey actor)) continue;
 
-            if (!TryMatch(liveTargets, diff.Target, out (ProcessKey Actor, DateTimeOffset When) hit))
-                continue;
-
-            updates.Add(diff with
+            _ctx.Sink.Write(diff with
             {
-                Actor = hit.Actor,
+                Actor = actor,
                 Confidence = AttributionConfidence.Probable,
                 Details = AppendEvidence(diff.Details, "attributed by matching a live kernel event on the same artifact"),
             });
             attributed++;
         }
 
-        foreach (Observation update in updates) _ctx.Sink.Write(update);
         return attributed;
     }
 
     private static bool TryMatch(
-        Dictionary<string, (ProcessKey, DateTimeOffset)> liveTargets,
+        Dictionary<string, ProcessKey> exact,
+        Dictionary<string, ProcessKey> bySegment,
         string identity,
-        out (ProcessKey Actor, DateTimeOffset When) hit)
+        out ProcessKey actor)
     {
-        if (liveTargets.TryGetValue(identity, out hit)) return true;
+        if (exact.TryGetValue(identity, out actor)) return true;
 
-        // A service snapshot is keyed by service name; the live event that created it
-        // wrote under HKLM\SYSTEM\CurrentControlSet\Services\<name>.
-        foreach ((string target, (ProcessKey actor, DateTimeOffset when)) in liveTargets)
-        {
-            if (target.EndsWith($@"\{identity}", StringComparison.OrdinalIgnoreCase)
-                || target.Contains($@"\{identity}\", StringComparison.OrdinalIgnoreCase))
-            {
-                hit = (actor, when);
-                return true;
-            }
-        }
+        // Fall back to the last meaningful segment of the identity — the service
+        // name, the task name, the value name.
+        string leaf = identity;
+        int sep = leaf.LastIndexOf("::", StringComparison.Ordinal);
+        if (sep >= 0) leaf = leaf[(sep + 2)..];
+        int slash = leaf.LastIndexOf('\\');
+        if (slash >= 0) leaf = leaf[(slash + 1)..];
 
-        hit = default;
-        return false;
+        return leaf.Length >= 3 && bySegment.TryGetValue(leaf, out actor);
     }
 
     private static string? Summarize(string? payload)

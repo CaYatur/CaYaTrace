@@ -140,6 +140,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
         {
             _snapshots = new SnapshotEngine(_ctx);
             await _snapshots.CaptureAsync(SnapshotEngine.PhaseBefore, cancellationToken).ConfigureAwait(false);
+            SeedRegistryBaseline(_ctx);
         }
 
         // The subject is created suspended before collectors start, so its PID is
@@ -186,6 +187,65 @@ public sealed class SessionOrchestrator : IAsyncDisposable
 
         _store.SaveSessionInfo(session);
         return session;
+    }
+
+    /// <summary>
+    /// Feeds baseline registry values into the value-capture cache.
+    /// </summary>
+    /// <remarks>
+    /// Without this, the first write to any value has no recorded predecessor, so an
+    /// installer's registry activity reads as a list of establishments rather than
+    /// the transitions an analyst wants ("Start changed from 3 to 2"). The autorun,
+    /// persistence, and service snapshots already hold the current data for the keys
+    /// where that distinction carries weight, so replaying them into the cache costs
+    /// nothing beyond a JSON parse per row.
+    /// </remarks>
+    private static void SeedRegistryBaseline(CollectorContext ctx)
+    {
+        foreach (string kind in new[] { "autorun", "persistence", "service" })
+        {
+            Dictionary<string, string> rows = ctx.Store.ReadSnapshot(SnapshotEngine.PhaseBefore, kind, ctx.OriginId);
+
+            foreach ((string identity, string payload) in rows)
+            {
+                // Identities are stored as "<key>::<value>"; anything without a value
+                // component is a key-level row with no data to seed.
+                (string keyPath, string? valueName) = Core.Naming.RegistryPath.SplitValue(identity);
+                if (valueName is null) continue;
+
+                // The autorun provider tags the 32-bit view in the identity so both
+                // registry views stay distinguishable; the suffix is not part of the name.
+                int viewTag = valueName.IndexOf(" (32-bit view)", StringComparison.Ordinal);
+                if (viewTag >= 0) valueName = valueName[..viewTag];
+
+                string? data = ExtractSeedValue(payload);
+                if (data is not null) ctx.RegistryValues.Seed(keyPath, valueName, data);
+            }
+        }
+
+        ctx.Logger.LogInformation("seeded {Count} registry values from the baseline snapshot",
+            ctx.RegistryValues.Seeded);
+    }
+
+    private static string? ExtractSeedValue(string payload)
+    {
+        try
+        {
+            using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(payload);
+            foreach (string field in new[] { "Command", "Value", "ImagePath", "Debugger" })
+            {
+                if (doc.RootElement.TryGetProperty(field, out System.Text.Json.JsonElement element)
+                    && element.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    return element.GetString();
+                }
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // A malformed snapshot row is not worth failing session start over.
+        }
+        return null;
     }
 
     private void RegisterTargetProcess(SuspendedProcess target)

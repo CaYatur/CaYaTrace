@@ -32,15 +32,30 @@ public sealed class SessionStore : IDisposable
     public static SessionStore Create(string path)
     {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
-        var store = Open(path);
-        using SqliteCommand cmd = store._connection.CreateCommand();
-        cmd.CommandText = SessionSchema.Create;
-        cmd.ExecuteNonQuery();
+
+        SessionStore store = OpenConnection(path);
+
+        using (SqliteCommand cmd = store._connection.CreateCommand())
+        {
+            cmd.CommandText = SessionSchema.Create;
+            cmd.ExecuteNonQuery();
+        }
+
+        // The sequence can only be read once the schema exists, so it is seeded here
+        // rather than in the connection helper.
+        store.InitializeSequence();
         store.SetMeta("schema_version", SessionSchema.Version.ToString(CultureInfo.InvariantCulture));
         return store;
     }
 
     public static SessionStore Open(string path)
+    {
+        SessionStore store = OpenConnection(path);
+        store.InitializeSequence();
+        return store;
+    }
+
+    private static SessionStore OpenConnection(string path)
     {
         var builder = new SqliteConnectionStringBuilder
         {
@@ -59,10 +74,15 @@ public sealed class SessionStore : IDisposable
             pragma.ExecuteNonQuery();
         }
 
-        var store = new SessionStore(connection, path);
-        store._nextSeq = store.QueryScalarLong("SELECT COALESCE(MAX(seq), 0) FROM observations") + 1;
-        return store;
+        return new SessionStore(connection, path);
     }
+
+    /// <summary>
+    /// Continues numbering after whatever the file already holds, so reopening a
+    /// session to add analysis passes cannot collide with existing rows.
+    /// </summary>
+    private void InitializeSequence()
+        => _nextSeq = QueryScalarLong("SELECT COALESCE(MAX(seq), 0) FROM observations") + 1;
 
     /// <summary>Allocates the next observation sequence number. Thread-safe.</summary>
     public long NextSequence() => Interlocked.Increment(ref _nextSeq) - 1;

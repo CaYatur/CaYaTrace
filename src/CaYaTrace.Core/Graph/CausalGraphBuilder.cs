@@ -56,6 +56,13 @@ public sealed class CausalGraphBuilder
     private readonly ProcessTable _processes;
     private readonly FlowTable? _flows;
 
+    /// <summary>
+    /// Endpoint-keyed view of the flow table, built once per <see cref="Build"/>.
+    /// Rebuilding it per flow node would copy the whole table hundreds of times on a
+    /// network-active subject.
+    /// </summary>
+    private Dictionary<string, NetworkFlow>? _flowsByEndpoint;
+
     public CausalGraphBuilder(ProcessTable processes, FlowTable? flows = null)
     {
         _processes = processes;
@@ -67,6 +74,18 @@ public sealed class CausalGraphBuilder
         CausalGraphOptions? options = null)
     {
         options ??= CausalGraphOptions.Default;
+
+        _flowsByEndpoint = null;
+        if (_flows is not null)
+        {
+            _flowsByEndpoint = new Dictionary<string, NetworkFlow>(StringComparer.OrdinalIgnoreCase);
+            foreach (NetworkFlow flow in _flows.Snapshot())
+            {
+                // Several ephemeral local ports can talk to the same endpoint; the
+                // first flow seen wins, and its byte totals are the representative ones.
+                _flowsByEndpoint.TryAdd(FlowKey.Format(flow.Key.RemoteAddress, flow.Key.RemotePort), flow);
+            }
+        }
 
         var byProcess = new Dictionary<ProcessKey, List<Observation>>();
         var orphans = new List<Observation>();
@@ -362,15 +381,8 @@ public sealed class CausalGraphBuilder
 
     private void EnrichFromFlowTable(CausalNode flowNode)
     {
-        if (_flows is null) return;
-
-        NetworkFlow? match = _flows.Snapshot()
-            .FirstOrDefault(f => string.Equals(
-                FlowKey.Format(f.Key.RemoteAddress, f.Key.RemotePort),
-                flowNode.Label,
-                StringComparison.OrdinalIgnoreCase));
-
-        if (match is null) return;
+        if (_flowsByEndpoint is null) return;
+        if (!_flowsByEndpoint.TryGetValue(flowNode.Label, out NetworkFlow? match)) return;
 
         if (match.ResolvedHost is { Length: > 0 })
             flowNode.Facts.Add(new("host", match.ResolvedHost));

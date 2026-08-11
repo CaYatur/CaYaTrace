@@ -179,23 +179,23 @@ internal static class ProcessMetadata
 
     private static (IntegrityLevel, bool, string?, string?) InspectToken(uint pid)
     {
+        IntPtr token = IntPtr.Zero;
         try
         {
             using var process = System.Diagnostics.Process.GetProcessById((int)pid);
-            using var identity = new System.Security.Principal.WindowsIdentity(GetTokenHandle(process));
-            string? sid = identity.User?.Value;
-            string? name = identity.Name;
+            if (!OpenProcessToken(process.Handle, TOKEN_QUERY, out token))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
 
-            IntegrityLevel level = identity.Claims
-                .Any(c => c.Type.EndsWith("groupsid", StringComparison.OrdinalIgnoreCase))
-                ? IntegrityLevel.Medium
-                : IntegrityLevel.Unknown;
-
+            // WindowsIdentity duplicates the handle rather than taking ownership, so
+            // the original must still be closed here or the session leaks one handle
+            // per unique process observed.
+            using var identity = new System.Security.Principal.WindowsIdentity(token);
             var principal = new System.Security.Principal.WindowsPrincipal(identity);
-            bool elevated = principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
-            if (elevated) level = IntegrityLevel.High;
 
-            return (level, elevated, sid, name);
+            IntegrityLevel level = ReadIntegrityLevel(token);
+            bool elevated = principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+
+            return (level, elevated, identity.User?.Value, identity.Name);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException
                                        or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
@@ -204,20 +204,105 @@ internal static class ProcessMetadata
             // opened even from an elevated context. Neither is an error.
             return (IntegrityLevel.Unknown, false, null, null);
         }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
     }
 
-    private static IntPtr GetTokenHandle(System.Diagnostics.Process process)
+    /// <summary>
+    /// Reads the token's mandatory integrity level from its integrity SID.
+    /// </summary>
+    /// <remarks>
+    /// Worth doing properly rather than inferring from group membership. The
+    /// difference between a Low-integrity browser renderer and a System service is
+    /// exactly the kind of thing an analyst reads off the process node, and a value
+    /// that is confidently wrong is worse than <see cref="IntegrityLevel.Unknown"/>.
+    /// The level lives in the last sub-authority of the integrity SID:
+    /// 0x0000 untrusted, 0x1000 low, 0x2000 medium, 0x3000 high, 0x4000 system.
+    /// </remarks>
+    private static IntegrityLevel ReadIntegrityLevel(IntPtr token)
     {
-        if (!OpenProcessToken(process.Handle, TOKEN_QUERY, out IntPtr token))
-            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-        return token;
+        const int TokenIntegrityLevel = 25;
+
+        GetTokenInformation(token, TokenIntegrityLevel, IntPtr.Zero, 0, out uint needed);
+        if (needed == 0) return IntegrityLevel.Unknown;
+
+        IntPtr buffer = Marshal.AllocHGlobal((int)needed);
+        try
+        {
+            if (!GetTokenInformation(token, TokenIntegrityLevel, buffer, needed, out _))
+                return IntegrityLevel.Unknown;
+
+            var label = Marshal.PtrToStructure<TOKEN_MANDATORY_LABEL>(buffer);
+            if (label.Label.Sid == IntPtr.Zero) return IntegrityLevel.Unknown;
+
+            IntPtr countPtr = GetSidSubAuthorityCount(label.Label.Sid);
+            if (countPtr == IntPtr.Zero) return IntegrityLevel.Unknown;
+
+            int count = Marshal.ReadByte(countPtr);
+            if (count == 0) return IntegrityLevel.Unknown;
+
+            IntPtr ridPtr = GetSidSubAuthority(label.Label.Sid, (uint)(count - 1));
+            if (ridPtr == IntPtr.Zero) return IntegrityLevel.Unknown;
+
+            uint rid = unchecked((uint)Marshal.ReadInt32(ridPtr));
+
+            // Levels are ranges, not exact values: Windows defines intermediate RIDs
+            // (AppContainer sits between low and medium), so compare by threshold.
+            return rid switch
+            {
+                >= 0x4000 => IntegrityLevel.System,
+                >= 0x3000 => IntegrityLevel.High,
+                >= 0x2000 => IntegrityLevel.Medium,
+                >= 0x1000 => IntegrityLevel.Low,
+                _ => IntegrityLevel.Untrusted,
+            };
+        }
+        catch (Exception ex) when (ex is AccessViolationException or ArgumentException)
+        {
+            return IntegrityLevel.Unknown;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
     }
 
     private const uint TOKEN_QUERY = 0x0008;
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SID_AND_ATTRIBUTES
+    {
+        public IntPtr Sid;
+        public uint Attributes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_MANDATORY_LABEL
+    {
+        public SID_AND_ATTRIBUTES Label;
+    }
+
     [DllImport("advapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetTokenInformation(
+        IntPtr tokenHandle, int tokenInformationClass, IntPtr tokenInformation,
+        uint tokenInformationLength, out uint returnLength);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern IntPtr GetSidSubAuthority(IntPtr sid, uint index);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 
     [DllImport("wintrust.dll", ExactSpelling = true, SetLastError = false)]
     private static extern uint WinVerifyTrust(IntPtr hwnd, ref Guid actionId, ref WINTRUST_DATA data);

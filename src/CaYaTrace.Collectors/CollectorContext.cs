@@ -35,6 +35,14 @@ public sealed class CollectorContext
 
     public required RegistryKeyResolver Registry { get; init; }
 
+    /// <summary>
+    /// Recovers registry value data, which ETW omits. Owned by the context rather
+    /// than by the kernel collector so the baseline snapshot can seed it with
+    /// pre-session values — that seeding is what makes "changed from X to Y"
+    /// available on a value's first write.
+    /// </summary>
+    public Etw.RegistryValueCapture RegistryValues { get; init; } = new();
+
     public ILogger Logger { get; init; } = NullLogger.Instance;
 
     /// <summary>Identifier for the machine this context collects on. Empty for the host.</summary>

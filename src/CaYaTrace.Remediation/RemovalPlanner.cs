@@ -1,0 +1,302 @@
+using CaYaTrace.Core.Model;
+using CaYaTrace.Core.Naming;
+using CaYaTrace.Storage;
+
+namespace CaYaTrace.Remediation;
+
+public sealed class RemovalPlannerOptions
+{
+    /// <summary>
+    /// Only include artifacts created by processes inside the observed tree. Off means
+    /// every persistent change in the session becomes a candidate, which is right for
+    /// a system-wide recording and wrong for a targeted install.
+    /// </summary>
+    public bool ScopedOnly { get; init; } = true;
+
+    /// <summary>
+    /// Include files that were written but not created. A program that appends to a
+    /// shared log has not taken ownership of it, and removing it would be wrong.
+    /// </summary>
+    public bool IncludeModifiedFiles { get; init; }
+
+    /// <summary>
+    /// Drop artifacts under temp directories. They are usually installer scratch that
+    /// Windows clears anyway, and including them bloats the plan.
+    /// </summary>
+    public bool ExcludeTemporary { get; init; } = true;
+
+    /// <summary>
+    /// Require an artifact to have been seen on at least this many machines. Above 1
+    /// this filters out per-machine randomness during multi-VM analysis.
+    /// </summary>
+    public int MinimumOriginAgreement { get; init; } = 1;
+
+    public static RemovalPlannerOptions Default { get; } = new();
+}
+
+/// <summary>
+/// Turns a recorded session into a proposed removal plan.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The planner is conservative on purpose. It proposes only artifacts the subject
+/// <em>brought into existence</em> — files it created, keys it added, services it
+/// registered — and never things it merely touched. A program that opened a shared
+/// configuration file, wrote to an existing log, or read a registry key has not taken
+/// ownership of it, and a plan that says otherwise damages the machine while claiming
+/// to clean it.
+/// </para>
+/// <para>
+/// Everything it produces is a <em>proposal</em>. <see cref="RemediationRunner"/> re-checks
+/// each item against the machine it runs on, and the operator approves before anything
+/// moves.
+/// </para>
+/// </remarks>
+public sealed class RemovalPlanner
+{
+    private readonly SessionStore _store;
+    private readonly PathNormalizer _paths;
+    private readonly RemovalPlannerOptions _options;
+
+    public RemovalPlanner(SessionStore store, PathNormalizer? paths = null, RemovalPlannerOptions? options = null)
+    {
+        _store = store;
+        _paths = paths ?? PathNormalizer.CreateForCurrentMachine();
+        _options = options ?? RemovalPlannerOptions.Default;
+    }
+
+    public List<RemovalItem> Build(SessionInfo session)
+    {
+        Dictionary<ProcessKey, ProcessNode> processes = _store.LoadProcesses().ToDictionary(static p => p.Key);
+
+        var byTarget = new Dictionary<string, RemovalItem>(StringComparer.OrdinalIgnoreCase);
+        var originsByTarget = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // Deletions cancel creations: a file the installer wrote and then removed
+        // itself is not a residue and must not appear in the plan.
+        var deleted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Observation o in _store.Query(new ObservationQuery()))
+        {
+            if (o.Action is EventAction.FileDelete or EventAction.DirectoryDelete)
+                deleted.Add(o.Target);
+            if (o.Action is EventAction.KeyDelete)
+                deleted.Add(o.Target);
+        }
+
+        foreach (Observation o in _store.Query(new ObservationQuery { PersistentChangesOnly = true }))
+        {
+            if (_options.ScopedOnly && !IsInScope(o, processes)) continue;
+
+            RemovalItem? item = Translate(o, processes);
+            if (item is null) continue;
+            if (deleted.Contains(item.Target)) continue;
+            if (_options.ExcludeTemporary && IsTemporary(item.Target)) continue;
+
+            string key = $"{item.Kind}|{item.Target}|{item.ValueName}";
+
+            if (!originsByTarget.TryGetValue(key, out HashSet<string>? origins))
+            {
+                origins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                originsByTarget[key] = origins;
+            }
+            origins.Add(o.OriginId ?? session.Machine.MachineId);
+
+            if (byTarget.TryGetValue(key, out RemovalItem? existing))
+            {
+                if (existing.Evidence.Count < 64) existing.Evidence.Add(o.Seq);
+                continue;
+            }
+
+            byTarget[key] = item;
+        }
+
+        var plan = new List<RemovalItem>();
+        foreach ((string key, RemovalItem item) in byTarget)
+        {
+            HashSet<string> origins = originsByTarget[key];
+            if (origins.Count < _options.MinimumOriginAgreement) continue;
+
+            item.ObservedOn.AddRange(origins);
+            plan.Add(item);
+        }
+
+        return plan.OrderBy(static i => i.Order).ThenBy(static i => i.Target, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private bool IsInScope(Observation o, Dictionary<ProcessKey, ProcessNode> processes)
+    {
+        // Snapshot-derived changes carry no actor by construction. Excluding them
+        // would drop exactly the persistence that live capture is worst at seeing.
+        if (o.Actor == ProcessKey.None) return o.Source == EvidenceSource.SnapshotDiff;
+
+        return processes.TryGetValue(o.Actor, out ProcessNode? node) && node.InScope;
+    }
+
+    private RemovalItem? Translate(Observation o, Dictionary<ProcessKey, ProcessNode> processes)
+    {
+        string who = Describe(o, processes);
+
+        switch (o.Action)
+        {
+            case EventAction.FileCreate:
+            case EventAction.HardLinkCreate:
+                return new RemovalItem
+                {
+                    Kind = RemovalKind.File,
+                    Target = _paths.Tokenize(o.Target),
+                    Rationale = $"created by {who}",
+                    Fingerprint = new ArtifactFingerprint(),
+                    Evidence = { o.Seq },
+                };
+
+            case EventAction.FileWrite when _options.IncludeModifiedFiles:
+                return new RemovalItem
+                {
+                    Kind = RemovalKind.File,
+                    Target = _paths.Tokenize(o.Target),
+                    Rationale = $"written by {who} (modified, not created — verify before removing)",
+                    Evidence = { o.Seq },
+                };
+
+            case EventAction.DirectoryCreate:
+                return new RemovalItem
+                {
+                    Kind = RemovalKind.Directory,
+                    Target = _paths.Tokenize(o.Target),
+                    Rationale = $"created by {who}",
+                    Evidence = { o.Seq },
+                };
+
+            case EventAction.FileRename:
+                // The destination is what exists afterwards; the source no longer does.
+                return o.Target2 is { Length: > 0 }
+                    ? new RemovalItem
+                    {
+                        Kind = RemovalKind.File,
+                        Target = _paths.Tokenize(o.Target2),
+                        Rationale = $"renamed into place by {who}",
+                        Evidence = { o.Seq },
+                    }
+                    : null;
+
+            case EventAction.ValueSet:
+            case EventAction.AutorunAdd:
+            case EventAction.AutorunModify:
+                return new RemovalItem
+                {
+                    Kind = o.Category == EventCategory.Autorun ? RemovalKind.AutorunEntry : RemovalKind.RegistryValue,
+                    Target = o.Target,
+                    ValueName = o.Target2,
+                    Rationale = o.OldValue is null
+                        ? $"set by {who}"
+                        : $"changed by {who} from '{Truncate(o.OldValue)}'",
+                    Fingerprint = new ArtifactFingerprint { ValueData = o.NewValue },
+                    Evidence = { o.Seq },
+                };
+
+            case EventAction.KeyCreate:
+                return new RemovalItem
+                {
+                    Kind = RemovalKind.RegistryKey,
+                    Target = o.Target,
+                    Rationale = $"created by {who}",
+                    Evidence = { o.Seq },
+                };
+
+            case EventAction.ServiceInstall:
+            case EventAction.ServiceModify:
+                return new RemovalItem
+                {
+                    Kind = RemovalKind.Service,
+                    Target = o.Target,
+                    Rationale = o.Source == EvidenceSource.SnapshotDiff
+                        ? "appeared between the before and after inventories"
+                        : $"registered by {who}",
+                    Fingerprint = new ArtifactFingerprint { CommandLine = ExtractCommand(o) },
+                    Evidence = { o.Seq },
+                };
+
+            case EventAction.TaskRegister:
+            case EventAction.TaskModify:
+                return new RemovalItem
+                {
+                    Kind = RemovalKind.ScheduledTask,
+                    Target = o.Target,
+                    Rationale = o.Source == EvidenceSource.SnapshotDiff
+                        ? "appeared between the before and after inventories"
+                        : $"registered by {who}",
+                    Evidence = { o.Seq },
+                };
+
+            case EventAction.DriverLoad:
+                return new RemovalItem
+                {
+                    Kind = RemovalKind.Service,
+                    Target = o.Target,
+                    Rationale = "kernel driver registered during the session",
+                    Evidence = { o.Seq },
+                };
+
+            default:
+                return null;
+        }
+    }
+
+    private static string? ExtractCommand(Observation o)
+    {
+        if (o.NewValue is { Length: > 0 }) return o.NewValue;
+        if (o.Details is not { Length: > 0 }) return null;
+
+        try
+        {
+            using System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(o.Details);
+            return doc.RootElement.TryGetProperty("ImagePath", out System.Text.Json.JsonElement image)
+                   && image.ValueKind == System.Text.Json.JsonValueKind.String
+                ? image.GetString()
+                : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string Describe(Observation o, Dictionary<ProcessKey, ProcessNode> processes)
+    {
+        if (o.Source == EvidenceSource.SnapshotDiff) return "the session (snapshot diff)";
+        return processes.TryGetValue(o.Actor, out ProcessNode? node)
+            ? $"{node.ImageName} ({node.Pid})"
+            : "an unidentified process";
+    }
+
+    private bool IsTemporary(string tokenizedPath)
+        => tokenizedPath.StartsWith("%TEMP%", StringComparison.OrdinalIgnoreCase)
+           || tokenizedPath.Contains(@"\Temp\", StringComparison.OrdinalIgnoreCase)
+           || tokenizedPath.Contains(@"\INetCache\", StringComparison.OrdinalIgnoreCase)
+           || tokenizedPath.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
+
+    private static string Truncate(string value)
+        => value.Length <= 60 ? value : value[..60] + "…";
+
+    /// <summary>Packages a plan for use on another machine.</summary>
+    public static void Export(
+        string path,
+        SessionInfo session,
+        IReadOnlyList<RemovalItem> items,
+        IEnumerable<Observation>? evidence = null)
+    {
+        var manifest = new PackageManifest
+        {
+            PackageId = $"ctpkg_{session.SessionId}",
+            SubjectName = session.Name,
+            SubjectPath = session.TargetPath,
+            SubjectSha256 = session.TargetSha256,
+            CreatedAt = DateTimeOffset.UtcNow,
+            ToolVersion = session.ToolVersion,
+            Origins = { session.Machine },
+        };
+
+        RemovalPackage.Write(path, manifest, items, evidence);
+    }
+}

@@ -1,12 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <!--
+      Console subsystem, not Windows. A WinExe has no console attached, so piping,
+      exit codes, and `&&` chaining all break for the CLI verbs — which is how this
+      tool gets driven from sandbox automation. The workbench hides the console
+      window on startup instead; a brief flash is a far smaller cost than a CLI the
+      shell does not wait for.
+    -->
+    <OutputType>Exe</OutputType>
     <RootNamespace>CaYaTrace.App</RootNamespace>
     <AssemblyName>CaYaTrace</AssemblyName>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon>Assets\cayatrace.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

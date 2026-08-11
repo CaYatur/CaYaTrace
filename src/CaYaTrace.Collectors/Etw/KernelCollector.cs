@@ -111,7 +111,7 @@ public sealed class KernelCollector : ICollector
             _session.EnableKernelProvider(keywords, BuildStackKeywords());
 
             if (_options.CaptureRegistryValues)
-                _valueCapture = new RegistryValueCapture(context);
+                _valueCapture = context.RegistryValues;
 
             Subscribe(_session.Source, context);
 
@@ -811,7 +811,6 @@ public sealed class KernelCollector : ICollector
             catch (Exception) { /* disposal must not throw */ }
         }
         _session?.Dispose();
-        _valueCapture?.Dispose();
     }
 }
 

@@ -38,7 +38,7 @@ namespace CaYaTrace.Collectors.Etw;
 /// bounds that exposure: past the budget, capture is skipped and counted rather than
 /// allowed to slow the pipeline.</para>
 /// </remarks>
-public sealed class RegistryValueCapture : IDisposable
+public sealed class RegistryValueCapture
 {
     /// <summary>
     /// Reads permitted per second. Sized to comfortably cover the write rate of an
@@ -49,7 +49,6 @@ public sealed class RegistryValueCapture : IDisposable
     /// <summary>Longest string retained. Some values hold megabytes of binary data.</summary>
     private const int MaxValueLength = 4096;
 
-    private readonly CollectorContext _ctx;
     private readonly Dictionary<string, string?> _lastKnown = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
     private readonly Stopwatch _window = Stopwatch.StartNew();
@@ -57,21 +56,30 @@ public sealed class RegistryValueCapture : IDisposable
     private int _readsThisWindow;
     private long _skipped;
     private long _captured;
-
-    public RegistryValueCapture(CollectorContext ctx) => _ctx = ctx;
+    private long _seeded;
 
     public long Captured => Interlocked.Read(ref _captured);
 
     /// <summary>Writes whose data could not be captured because the budget was spent.</summary>
     public long Skipped => Interlocked.Read(ref _skipped);
 
+    /// <summary>Values pre-loaded from the baseline so their first write reads as a transition.</summary>
+    public long Seeded => Interlocked.Read(ref _seeded);
+
     /// <summary>
-    /// Seeds a known value, so a later write to it can be reported as a transition.
-    /// Called by the baseline snapshot for keys worth pre-reading.
+    /// Seeds a known value so a later write to it is reported as a transition.
     /// </summary>
+    /// <remarks>
+    /// Without seeding, the <em>first</em> write to any value in a session has no
+    /// "before" — and for an installer that is most writes, which would make the
+    /// "changed from 0 to 1" reporting mostly absent exactly where it matters. The
+    /// baseline snapshot already reads the high-value keys, so feeding those rows in
+    /// here costs nothing and closes the gap.
+    /// </remarks>
     public void Seed(string keyPath, string? valueName, string? data)
     {
         lock (_gate) _lastKnown[RegistryPath.JoinValue(keyPath, valueName)] = data;
+        Interlocked.Increment(ref _seeded);
     }
 
     /// <summary>
@@ -187,14 +195,11 @@ public sealed class RegistryValueCapture : IDisposable
         _ => null,
     };
 
-    public void Dispose()
-    {
-        if (Skipped > 0)
-        {
-            _ctx.Store.LogQuality("registry-value-capture", "warning",
-                $"{Skipped} registry writes recorded without their data because the read budget was exhausted");
-        }
-    }
+    /// <summary>Short status line for the session's data-quality record.</summary>
+    public string? Summarize()
+        => Skipped == 0
+            ? null
+            : $"{Skipped} registry writes recorded without their data because the read budget was exhausted";
 }
 
 internal static class StringTruncateExtensions

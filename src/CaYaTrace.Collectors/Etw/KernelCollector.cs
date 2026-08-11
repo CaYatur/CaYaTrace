@@ -143,20 +143,89 @@ public sealed class KernelCollector : ICollector
     }
 
     /// <summary>
-    /// Windows 8 and later allow several concurrent kernel sessions under private
-    /// names, which is what lets CaYaTrace run alongside another tracing tool. Older
-    /// builds have exactly one, called "NT Kernel Logger"; taking it means anything
-    /// else using it stops working, so we only fall back when we must.
+    /// Opens the kernel session, clearing anything we left behind first.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Windows 8 and later allow several concurrent kernel sessions under private
+    /// names, which is what lets CaYaTrace run alongside another tracing tool.
+    /// </para>
+    /// <para>
+    /// <b>ETW sessions outlive the process that created them.</b> If CaYaTrace is killed —
+    /// by the analyst, by a crash, or by whatever is being analysed — the session stays
+    /// registered with the kernel and keeps consuming buffers indefinitely. The next
+    /// launch then fails to create a session with the same name. Sweeping our own
+    /// orphans before starting turns a permanent failure into a non-event; sessions
+    /// belonging to other tools are left strictly alone.
+    /// </para>
+    /// </remarks>
     private TraceEventSession CreateSession()
     {
+        CleanUpOrphanedSessions();
+
         try
         {
             return new TraceEventSession(_sessionName);
         }
-        catch (Exception) when (Environment.OSVersion.Version < new Version(6, 2))
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
-            return new TraceEventSession(KernelTraceEventParser.KernelSessionName);
+            // A same-named session survived the sweep — most likely created by another
+            // CaYaTrace instance that is still running. A unique name lets both coexist
+            // rather than one silently displacing the other.
+            return new TraceEventSession($"{_sessionName}-{Guid.NewGuid():N}"[..Math.Min(200, _sessionName.Length + 33)]);
+        }
+    }
+
+    /// <summary>
+    /// Stops kernel sessions this tool left registered by a previous run.
+    /// </summary>
+    /// <remarks>
+    /// Matching is on our own name prefix only. Stopping a session we do not own would
+    /// break whatever created it — potentially an EDR agent or another investigator's
+    /// capture running on the same machine.
+    /// </remarks>
+    private static void CleanUpOrphanedSessions()
+    {
+        const string prefix = "CaYaTrace-Kernel-";
+
+        IEnumerable<string> names;
+        try { names = TraceEventSession.GetActiveSessionNames(); }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            return;
+        }
+
+        foreach (string name in names)
+        {
+            if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+
+            // A session belonging to a still-running instance must survive; only the
+            // one matching this process id, or one whose owner is gone, is ours to stop.
+            string suffix = name[prefix.Length..];
+            int separator = suffix.IndexOf('-');
+            string pidPart = separator < 0 ? suffix : suffix[..separator];
+
+            if (int.TryParse(pidPart, out int ownerPid) && ownerPid != Environment.ProcessId && IsProcessAlive(ownerPid))
+                continue;
+
+            try { TraceEventSession.GetActiveSession(name)?.Stop(noThrow: true); }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            {
+                // Another user's session with a colliding name. Not ours to touch.
+            }
+        }
+    }
+
+    private static bool IsProcessAlive(int pid)
+    {
+        try
+        {
+            using System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            return false;
         }
     }
 

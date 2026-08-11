@@ -24,7 +24,7 @@ public sealed class CommandLine
 
     private static readonly HashSet<string> Verbs = new(StringComparer.OrdinalIgnoreCase)
     {
-        "trace", "report", "remediate", "agent", "version", "help",
+        "trace", "report", "remediate", "compare", "agent", "version", "help",
     };
 
     public static CommandLine Parse(string[] args)
@@ -110,6 +110,7 @@ public sealed class CommandLine
               CaYaTrace trace  [options]               Record a session headlessly
               CaYaTrace report [options]               Render a recorded session
               CaYaTrace remediate [options]            Apply a removal package
+              CaYaTrace compare <dirA> <dirB> [...]   Compare recordings from several machines
               CaYaTrace agent  [options]               Run as a fleet collection agent
               CaYaTrace version
 
@@ -137,6 +138,16 @@ public sealed class CommandLine
               --dry-run              Show the plan without changing anything (default)
               --apply                Actually perform the removal
               --quarantine <dir>     Where removed items are moved (default ./quarantine)
+
+            COMPARE
+              <dirA> <dirB> ...      Sessions of the same program from different machines
+              --export-package <f>   Write a removal package using measured path patterns
+              --min-origins <n>      Only include artifacts seen on at least this many
+                                     machines (default: all of them)
+
+              Comparing two machines is what turns a guessed path pattern into a
+              measured one, so a package built here still matches on a third machine
+              that names its random directories differently again.
 
             AGENT
               --host <addr:port>     Host to report to once paired

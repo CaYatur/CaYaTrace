@@ -107,6 +107,24 @@ public sealed record RemovalItem
     /// <summary>Registry value name, when <see cref="Kind"/> is a value.</summary>
     public string? ValueName { get; init; }
 
+    /// <summary>
+    /// The target with run-specific segments marked, e.g. <c>%APPDATA%\{*}\svc.exe</c>.
+    /// </summary>
+    /// <remarks>
+    /// Set when the artifact's path varies between installations. Without it a package
+    /// recorded against <c>%APPDATA%\a8f3c1\svc.exe</c> matches nothing on a machine where
+    /// the same program chose <c>%APPDATA%\d92b47\svc.exe</c> — the package looks clean and
+    /// leaves the program installed.
+    /// </remarks>
+    public string? TargetPattern { get; init; }
+
+    /// <summary>
+    /// Whether the pattern's variables were measured across machines or guessed from a
+    /// single observation. A guess widens what the plan matches, so it is never applied
+    /// without confirmation.
+    /// </summary>
+    public Analysis.TemplateEvidence PatternEvidence { get; init; } = Analysis.TemplateEvidence.Inferred;
+
     public ArtifactFingerprint Fingerprint { get; init; } = new();
 
     /// <summary>Why this is in the plan, shown to the operator before they approve.</summary>

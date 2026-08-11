@@ -89,7 +89,7 @@ This is an early release. What is real today versus designed is tracked honestly
 | Workbench UI (WebView2 + CaYaDev theme) | 🚧 in progress |
 | Packet capture via Pktmon | 📐 designed |
 | Intercepting proxy for full request bodies (opt-in) | 📐 designed |
-| Multi-VM comparison and path templating | 📐 designed |
+| Multi-VM comparison (`compare`) with measured path templating | ✅ working |
 | VirusTotal and Ollama integration | 📐 designed |
 | HTML / CSV export with category selection | 📐 designed |
 
@@ -118,6 +118,13 @@ Preview the removal on any machine (nothing is changed without `--apply`):
 
 ```bash
 CaYaTrace remediate --package Example.ctpkg
+```
+
+Record the same program on two VMs, then compare — the parts that recur are its real
+behaviour, and the paths that differ become *measured* patterns the package carries:
+
+```bash
+CaYaTrace compare .m-a .m-b --export-package Example.ctpkg
 ```
 
 Run `CaYaTrace` with no arguments for the workbench UI, or `CaYaTrace help` for every option.

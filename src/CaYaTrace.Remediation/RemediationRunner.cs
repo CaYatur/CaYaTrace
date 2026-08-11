@@ -134,8 +134,20 @@ public sealed class RemediationRunner
 
         bool isDirectory = Directory.Exists(path);
         bool isFile = File.Exists(path);
+
         if (!isDirectory && !isFile)
-            return new ItemResult(item, ItemOutcome.NotPresent, "not present on this machine");
+        {
+            // The exact path is absent, but the artifact may be here under a different
+            // run-specific name. This is the case a package built on one VM and applied
+            // to another exists to handle.
+            string? viaPattern = ResolveThroughPattern(item, decision);
+            if (viaPattern is null)
+                return new ItemResult(item, ItemOutcome.NotPresent, "not present on this machine");
+
+            path = viaPattern;
+            isDirectory = Directory.Exists(path);
+            isFile = File.Exists(path);
+        }
 
         FingerprintMatch match = FingerprintMatch.Unknown;
         if (isFile)
@@ -197,6 +209,72 @@ public sealed class RemediationRunner
 
         Journal("filesystem", item.Target, new { original = path, quarantined = destination, isDirectory });
         return new ItemResult(item, ItemOutcome.Removed, "moved to quarantine", destination);
+    }
+
+    /// <summary>
+    /// Finds an artifact that is present under a different run-specific name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Gated hard, because widening what a removal matches is exactly how an
+    /// uninstaller starts deleting things it was never shown. Four conditions must all
+    /// hold before a pattern match is even offered:
+    /// </para>
+    /// <list type="number">
+    ///   <item><description>The item carries a pattern with a variable slot.</description></item>
+    ///   <item><description>Expansion finds exactly one candidate. Several means the
+    ///   pattern is too loose to act on, and guessing between them is worse than
+    ///   reporting the item as absent.</description></item>
+    ///   <item><description>The candidate's fingerprint matches what was recorded.
+    ///   A path shaped like the artifact is not the artifact.</description></item>
+    ///   <item><description>The operator confirms — always, and regardless of whether
+    ///   the pattern was measured or guessed.</description></item>
+    /// </list>
+    /// </remarks>
+    private string? ResolveThroughPattern(RemovalItem item, SafetyDecision decision)
+    {
+        if (item.TargetPattern is not { Length: > 0 }) return null;
+
+        Analysis.PathTemplate template = Analysis.PathTemplater.Infer(item.TargetPattern);
+        if (!item.TargetPattern.Contains("{*}", StringComparison.Ordinal)) return null;
+
+        // Rebuild the template from the stored pattern so the variable slots are the
+        // ones the package recorded, not ones re-guessed here.
+        var segments = item.TargetPattern
+            .Split('\\', StringSplitOptions.RemoveEmptyEntries)
+            .Select(static s => s == "{*}"
+                ? new Analysis.PathSegment(s, Analysis.SegmentKind.Variable)
+                : new Analysis.PathSegment(s, Analysis.SegmentKind.Literal))
+            .ToList();
+
+        template = new Analysis.PathTemplate(segments, item.PatternEvidence);
+
+        IReadOnlyList<string> candidates = Analysis.PathTemplater.Expand(template, _paths);
+        if (candidates.Count != 1) return null;
+
+        string candidate = candidates[0];
+
+        if (_policy.EvaluateFile(candidate).Verdict == SafetyVerdict.Forbidden) return null;
+
+        // The fingerprint check is what separates "the same artifact under another
+        // name" from "an unrelated file in a similarly shaped path".
+        if (File.Exists(candidate))
+        {
+            ArtifactFingerprint live = InspectFile(candidate);
+            if (item.Fingerprint.Compare(live) != FingerprintMatch.Exact) return null;
+        }
+        else if (item.Fingerprint.Sha256 is { Length: > 0 })
+        {
+            // A file was recorded but a directory is present. Not the same thing.
+            return null;
+        }
+
+        string reason =
+            $"not at the recorded path, but {candidate} matches the pattern {item.TargetPattern} " +
+            $"({item.PatternEvidence.ToString().ToLowerInvariant()}) and its contents match the recording";
+
+        _ = decision;
+        return Confirm(item, FingerprintMatch.Exact, reason) ? candidate : null;
     }
 
     // -------------------------------------------------------------- registry

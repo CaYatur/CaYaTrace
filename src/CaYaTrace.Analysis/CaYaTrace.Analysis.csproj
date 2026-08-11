@@ -9,6 +9,16 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
   </ItemGroup>
 
+  <!--
+    The templating heuristics are internal because callers should go through the
+    template API, not the individual predicates. They still need direct tests: a
+    change to what counts as a "random-looking" segment silently changes what a
+    removal package will match on someone else's machine.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="CaYaTrace.Tests" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\CaYaTrace.Core\CaYaTrace.Core.csproj" />
     <ProjectReference Include="..\CaYaTrace.Storage\CaYaTrace.Storage.csproj" />

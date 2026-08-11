@@ -118,10 +118,36 @@ public sealed class RemovalPlanner
             if (origins.Count < _options.MinimumOriginAgreement) continue;
 
             item.ObservedOn.AddRange(origins);
-            plan.Add(item);
+            plan.Add(AttachTemplate(item));
         }
 
         return plan.OrderBy(static i => i.Order).ThenBy(static i => i.Target, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Marks run-specific path segments so the item can still be found on a machine
+    /// where the program chose different random names.
+    /// </summary>
+    /// <remarks>
+    /// Only file-system items get one — a registry path's variability is a different
+    /// problem with different rules. From a single session the variables can only be
+    /// inferred, so the template is recorded as a guess and the runner treats it as
+    /// one: it is consulted only when the exact path is absent, and never acts without
+    /// a fingerprint match and an explicit confirmation.
+    /// </remarks>
+    private static RemovalItem AttachTemplate(RemovalItem item)
+    {
+        if (item.Kind is not (RemovalKind.File or RemovalKind.Directory)) return item;
+
+        Analysis.PathTemplate template = Analysis.PathTemplater.Infer(item.Target);
+        if (!template.HasVariables) return item;
+
+        return item with
+        {
+            TargetPattern = template.Pattern,
+            PatternEvidence = template.Evidence,
+            Rationale = $"{item.Rationale}; path contains run-specific segments ({template.Pattern})",
+        };
     }
 
     private bool IsInScope(Observation o, Dictionary<ProcessKey, ProcessNode> processes)

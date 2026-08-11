@@ -54,6 +54,7 @@ public static class Program
                 "trace" => TraceCommand.Run(parsed),
                 "report" => ReportCommand.Run(parsed),
                 "remediate" => RemediateCommand.Run(parsed),
+                "compare" => CompareCommand.Run(parsed),
                 "agent" => AgentCommand.Run(parsed),
                 "version" => PrintVersion(),
                 "help" => CommandLine.PrintUsage(),

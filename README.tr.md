@@ -92,7 +92,7 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Çalışma tezgâhı arayüzü (WebView2 + CaYaDev teması) | 🚧 devam ediyor |
 | Pktmon ile paket yakalama | 📐 tasarlandı |
 | Tam istek gövdeleri için araya giren proxy (isteğe bağlı) | 📐 tasarlandı |
-| Çoklu VM karşılaştırması ve yol şablonlama | 📐 tasarlandı |
+| Çoklu VM karşılaştırması (`compare`) ve ölçülmüş yol şablonlama | ✅ çalışıyor |
 | VirusTotal ve Ollama entegrasyonu | 📐 tasarlandı |
 | Kategori seçimli HTML / CSV dışa aktarma | 📐 tasarlandı |
 
@@ -122,6 +122,13 @@ Kaldırmayı herhangi bir cihazda önizleyin (`--apply` olmadan hiçbir şey de�
 
 ```bash
 CaYaTrace remediate --package Example.ctpkg
+```
+
+Aynı programı iki VM'de kaydedip karşılaştırın — her ikisinde de tekrar edenler programın
+gerçek davranışı, farklı olan yollar ise paketin taşıdığı *ölçülmüş* şablonlar olur:
+
+```bash
+CaYaTrace compare .m-a .m-b --export-package Example.ctpkg
 ```
 
 Arayüz için `CaYaTrace` komutunu argümansız çalıştırın; tüm seçenekler için

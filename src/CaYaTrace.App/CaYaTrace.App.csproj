@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>CaYaTrace.App</RootNamespace>
+    <AssemblyName>CaYaTrace</AssemblyName>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\cayatrace.ico</ApplicationIcon>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <EnableDefaultNoneItems>false</EnableDefaultNoneItems>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CaYaTrace.Core\CaYaTrace.Core.csproj" />
+    <ProjectReference Include="..\CaYaTrace.Storage\CaYaTrace.Storage.csproj" />
+    <ProjectReference Include="..\CaYaTrace.Collectors\CaYaTrace.Collectors.csproj" />
+    <ProjectReference Include="..\CaYaTrace.Analysis\CaYaTrace.Analysis.csproj" />
+    <ProjectReference Include="..\CaYaTrace.Remediation\CaYaTrace.Remediation.csproj" />
+    <ProjectReference Include="..\CaYaTrace.Fleet\CaYaTrace.Fleet.csproj" />
+    <ProjectReference Include="..\CaYaTrace.Export\CaYaTrace.Export.csproj" />
+  </ItemGroup>
+
+  <!-- The React UI is built by ui/ and embedded so the host stays a single file. -->
+  <ItemGroup>
+    <EmbeddedResource Include="wwwroot\**\*" LogicalName="ui/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

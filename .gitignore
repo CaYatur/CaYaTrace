@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------------------
+# CaYaTrace — never commit captured evidence. Sessions can contain credentials,
+# tokens, cookies, request bodies, and other highly sensitive data.
+# ---------------------------------------------------------------------------
+sessions/
+logs/
+captures/
+quarantine/
+evidence/
+*.ctpkg
+*.ctsession
+*.etl
+*.pcapng
+*.pcap
+*.ctlog
+
+# Secrets / local config
+*.local.json
+appsettings.Local.json
+.env
+.env.*
+!.env.example
+secrets/
+*.pfx
+*.p12
+*.key
+!tests/**/fixtures/**/*.key
+
+# .NET
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]64/
+artifacts/
+publish/
+*.user
+*.suo
+*.userprefs
+*.cache
+*.dbmdl
+*.binlog
+.vs/
+TestResults/
+BenchmarkDotNet.Artifacts/
+
+# Node / UI
+node_modules/
+ui/dist/
+ui/.vite/
+ui/stats.html
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# Embedded UI build output copied into the host project
+src/CaYaTrace.App/wwwroot/
+
+# Editors / OS
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Scratch
+tmp/
+scratch/

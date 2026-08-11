@@ -1,0 +1,264 @@
+using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using CaYaTrace.Core.Model;
+
+namespace CaYaTrace.Collectors.Etw;
+
+/// <summary>
+/// Fills in the facts about a process that ETW does not carry: image hash,
+/// Authenticode state, signer, integrity level, and owning user.
+/// </summary>
+/// <remarks>
+/// <para>
+/// All of it is expensive — hashing reads the file, signature verification hits the
+/// certificate chain and possibly the network for revocation — so none of it happens
+/// on the ETW callback thread. Process-start events queue the work and a small pool
+/// drains it; the tree renders immediately and these fields appear as they resolve.
+/// </para>
+/// <para>
+/// Results are cached by path so an installer that spawns the same helper forty times
+/// verifies it once.
+/// </para>
+/// </remarks>
+internal static class ProcessMetadata
+{
+    private static readonly ConcurrentDictionary<string, Lazy<ImageFacts>> Cache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly SemaphoreSlim Throttle = new(2, 2);
+
+    /// <summary>Files larger than this are not hashed; the read cost outweighs the value.</summary>
+    private const long MaxHashBytes = 256L * 1024 * 1024;
+
+    internal sealed record ImageFacts(
+        string? Sha256,
+        SignatureState Signature,
+        string? Signer,
+        long Size);
+
+    public static void EnrichInBackground(ProcessNode node, CollectorContext ctx)
+    {
+        if (node.ImagePath.Length == 0 || node.Sha256 is not null) return;
+
+        _ = Task.Run(async () =>
+        {
+            await Throttle.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                ImageFacts facts = Cache.GetOrAdd(node.ImagePath,
+                    static path => new Lazy<ImageFacts>(() => Inspect(path), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+
+                node.Sha256 ??= facts.Sha256;
+                node.Signer ??= facts.Signer;
+                if (node.Signature == SignatureState.Unchecked) node.Signature = facts.Signature;
+                if (node.ImageSize == 0) node.ImageSize = facts.Size;
+
+                (IntegrityLevel integrity, bool elevated, string? sid, string? user) = InspectToken(node.Pid);
+                if (node.Integrity == IntegrityLevel.Unknown) node.Integrity = integrity;
+                node.IsElevated |= elevated;
+                node.UserSid ??= sid;
+                node.UserName ??= user;
+            }
+            catch (Exception ex)
+            {
+                ctx.Logger.LogDebugSafe($"metadata enrichment failed for {node.ImagePath}: {ex.Message}");
+            }
+            finally
+            {
+                Throttle.Release();
+            }
+        });
+    }
+
+    private static ImageFacts Inspect(string path)
+    {
+        string? sha = null;
+        long size = 0;
+
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.Exists)
+            {
+                size = info.Length;
+                if (size <= MaxHashBytes)
+                {
+                    using FileStream fs = File.OpenRead(path);
+                    sha = Convert.ToHexString(SHA256.HashData(fs)).ToLowerInvariant();
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A file locked by the process that created it, or deleted before we got
+            // to it. Both are ordinary; the absence of a hash is itself informative.
+        }
+
+        (SignatureState state, string? signer) = VerifySignature(path);
+        return new ImageFacts(sha, state, signer, size);
+    }
+
+    // ------------------------------------------------------------ signatures
+
+    private static readonly Guid WinTrustActionGenericVerifyV2 =
+        new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+
+    private static (SignatureState State, string? Signer) VerifySignature(string path)
+    {
+        if (!File.Exists(path)) return (SignatureState.CheckFailed, null);
+
+        string? signer = null;
+        try
+        {
+            using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
+            signer = cert.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
+        }
+        catch (CryptographicException)
+        {
+            // No embedded signature. It may still be catalog-signed, which
+            // WinVerifyTrust below will establish.
+        }
+
+        try
+        {
+            uint result = CallWinVerifyTrust(path);
+            SignatureState state = result switch
+            {
+                0 => SignatureState.SignedValid,
+                0x800B0100 => SignatureState.Unsigned,          // TRUST_E_NOSIGNATURE
+                0x800B0101 => SignatureState.SignedExpired,     // CERT_E_EXPIRED
+                0x800B0109 => SignatureState.SignedUntrustedRoot, // CERT_E_UNTRUSTEDROOT
+                0x80096010 => SignatureState.SignedInvalid,     // TRUST_E_BAD_DIGEST
+                0x800B010A => SignatureState.SignedInvalid,     // CERT_E_CHAINING
+                _ => SignatureState.SignedInvalid,
+            };
+            return (state, signer);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return (signer is null ? SignatureState.CheckFailed : SignatureState.SignedInvalid, signer);
+        }
+    }
+
+    private static uint CallWinVerifyTrust(string path)
+    {
+        var fileInfo = new WINTRUST_FILE_INFO
+        {
+            cbStruct = (uint)Marshal.SizeOf<WINTRUST_FILE_INFO>(),
+            pcwszFilePath = path,
+        };
+
+        IntPtr fileInfoPtr = Marshal.AllocHGlobal(Marshal.SizeOf<WINTRUST_FILE_INFO>());
+        try
+        {
+            Marshal.StructureToPtr(fileInfo, fileInfoPtr, fDeleteOld: false);
+
+            var data = new WINTRUST_DATA
+            {
+                cbStruct = (uint)Marshal.SizeOf<WINTRUST_DATA>(),
+                dwUIChoice = 2,             // WTD_UI_NONE — never prompt
+                fdwRevocationChecks = 0,    // WTD_REVOKE_NONE — no network round trip
+                dwUnionChoice = 1,          // WTD_CHOICE_FILE
+                pFile = fileInfoPtr,
+                dwStateAction = 0,
+                dwProvFlags = 0x00000010,   // WTD_CACHE_ONLY_URL_RETRIEVAL
+            };
+
+            Guid action = WinTrustActionGenericVerifyV2;
+            return WinVerifyTrust(IntPtr.Zero, ref action, ref data);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(fileInfoPtr);
+        }
+    }
+
+    // ---------------------------------------------------------------- token
+
+    private static (IntegrityLevel, bool, string?, string?) InspectToken(uint pid)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)pid);
+            using var identity = new System.Security.Principal.WindowsIdentity(GetTokenHandle(process));
+            string? sid = identity.User?.Value;
+            string? name = identity.Name;
+
+            IntegrityLevel level = identity.Claims
+                .Any(c => c.Type.EndsWith("groupsid", StringComparison.OrdinalIgnoreCase))
+                ? IntegrityLevel.Medium
+                : IntegrityLevel.Unknown;
+
+            var principal = new System.Security.Principal.WindowsPrincipal(identity);
+            bool elevated = principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+            if (elevated) level = IntegrityLevel.High;
+
+            return (level, elevated, sid, name);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException
+                                       or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            // The process exited, or it is protected (PPL) and its token cannot be
+            // opened even from an elevated context. Neither is an error.
+            return (IntegrityLevel.Unknown, false, null, null);
+        }
+    }
+
+    private static IntPtr GetTokenHandle(System.Diagnostics.Process process)
+    {
+        if (!OpenProcessToken(process.Handle, TOKEN_QUERY, out IntPtr token))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        return token;
+    }
+
+    private const uint TOKEN_QUERY = 0x0008;
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("wintrust.dll", ExactSpelling = true, SetLastError = false)]
+    private static extern uint WinVerifyTrust(IntPtr hwnd, ref Guid actionId, ref WINTRUST_DATA data);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINTRUST_FILE_INFO
+    {
+        public uint cbStruct;
+        [MarshalAs(UnmanagedType.LPWStr)] public string pcwszFilePath;
+        public IntPtr hFile;
+        public IntPtr pgKnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINTRUST_DATA
+    {
+        public uint cbStruct;
+        public IntPtr pPolicyCallbackData;
+        public IntPtr pSIPClientData;
+        public uint dwUIChoice;
+        public uint fdwRevocationChecks;
+        public uint dwUnionChoice;
+        public IntPtr pFile;
+        public uint dwStateAction;
+        public IntPtr hWVTStateData;
+        public IntPtr pwszURLReference;
+        public uint dwProvFlags;
+        public uint dwUIContext;
+        public IntPtr pSignatureSettings;
+    }
+}
+
+internal static class LoggerSafeExtensions
+{
+    /// <summary>
+    /// Debug logging that cannot itself become a failure path. Enrichment runs on
+    /// background threads where an unhandled exception would be lost anyway.
+    /// </summary>
+    public static void LogDebugSafe(this Microsoft.Extensions.Logging.ILogger logger, string message)
+    {
+        try { Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(logger, "{Message}", message); }
+        catch (Exception) { /* logging must never throw into a collector */ }
+    }
+}

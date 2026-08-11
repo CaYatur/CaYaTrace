@@ -34,12 +34,41 @@ public static class WorkbenchMode
             return 4;
         }
 
-        Console.Error.WriteLine($"cayatrace: workbench UI is not implemented in this build (WebView2 {version} detected).");
-        Console.Error.WriteLine("           Use the CLI in the meantime:");
-        Console.Error.WriteLine();
-        CommandLine.PrintUsage();
-        return 4;
+        // The console exists because this is a console-subsystem binary (so the CLI
+        // composes properly). In GUI mode it is noise, so hide it rather than leaving
+        // an empty black window behind the workbench.
+        HideConsoleWindow();
+
+        System.Windows.Forms.Application.EnableVisualStyles();
+        System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
+
+        string? session = cmd.Get("session") ?? cmd.Positional.FirstOrDefault();
+        using var window = new WorkbenchWindow(session);
+        System.Windows.Forms.Application.Run(window);
+        return 0;
     }
+
+    private static void HideConsoleWindow()
+    {
+        try
+        {
+            IntPtr handle = GetConsoleWindow();
+            if (handle != IntPtr.Zero) ShowWindow(handle, SW_HIDE);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            // No console to hide — launched detached. Nothing to do.
+        }
+    }
+
+    private const int SW_HIDE = 0;
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern IntPtr GetConsoleWindow();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 
 internal static class WebViewRuntime

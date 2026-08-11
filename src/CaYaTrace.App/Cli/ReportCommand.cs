@@ -53,10 +53,17 @@ public static class ReportCommand
         {
             "tree" => TreeRenderer.Render(session, roots, store),
             "json" => JsonRenderer.Render(session, roots),
+
+            // The HTML report is the workbench markup with the session inlined, so a
+            // reader who will never install the tool sees exactly what the analyst saw.
+            "html" => Modes.Assets.RenderStatic(Modes.WorkbenchWindow.BuildPayload(store, session, options)),
+
             _ => throw new CommandLineException(
-                $"unsupported format '{format}' for the CLI; use tree or json " +
-                "(html and csv are produced from the workbench)"),
+                $"unsupported format '{format}'; use tree, json, or html"),
         };
+
+        if (format == "html" && cmd.Get("out") is null)
+            throw new CommandLineException("--out is required for --format html");
 
         string? outPath = cmd.Get("out");
         if (outPath is null)

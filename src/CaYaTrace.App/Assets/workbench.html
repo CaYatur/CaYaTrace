@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<!--
+  The CaYaTrace workbench.
+
+  This single file serves two purposes on purpose. Inside the app it is loaded by
+  WebView2 and talks to the engine over the host bridge. Exported, the same file is
+  written with the session data inlined into window.__CAYATRACE_DATA__ and opens in
+  any browser with no tool, no server, and no network.
+
+  Keeping them the same file means the report a colleague opens is literally the view
+  the analyst was looking at, rather than a second renderer that drifts from the first.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CaYaTrace</title>
+<style>/*__THEME_CSS__*/</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="14" fill="none" stroke="#dc2626" stroke-width="2"/>
+        <circle cx="16" cy="16" r="8"  fill="none" stroke="#dc2626" stroke-width="1.2" opacity=".55"/>
+        <circle cx="16" cy="16" r="2.6" fill="#ef4444"/>
+        <circle cx="16" cy="2"  r="2.4" fill="#f8fafc"/>
+        <circle cx="28.1" cy="23" r="2.4" fill="#f8fafc"/>
+        <circle cx="3.9"  cy="23" r="2.4" fill="#f8fafc"/>
+        <path d="M16 4.6V13M17.9 17.3l8.2 4.5M14.1 17.3l-8.2 4.5"
+              stroke="#94a3b8" stroke-width="1.1" opacity=".8"/>
+      </svg>
+      <span><span class="mark">CAYA</span><span class="rest">TRACE</span></span>
+    </div>
+
+    <div class="session-chip" id="sessionChip">no session</div>
+    <div class="topbar-spacer"></div>
+
+    <button class="btn btn-ghost" id="btnExpand" type="button">Expand all</button>
+    <button class="btn btn-ghost" id="btnCollapse" type="button">Collapse</button>
+    <button class="btn btn-primary" id="btnPlan" type="button">Build removal plan</button>
+  </header>
+
+  <div class="filterbar">
+    <input type="search" id="search" placeholder="Filter by path, key, host, or command line…"
+           autocomplete="off" spellcheck="false" aria-label="Filter">
+    <div class="chips" id="chips"></div>
+    <label class="chip" style="cursor:pointer">
+      <input type="checkbox" id="showReads" style="margin:0"> reads
+    </label>
+  </div>
+
+  <div id="qualityHost"></div>
+
+  <div class="panes">
+    <main class="tree-pane" id="tree" role="tree" aria-label="Causal tree"></main>
+    <aside class="detail-pane" id="detail">
+      <div class="empty">
+        <div>
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+            <circle cx="11" cy="11" r="7"/><path d="M20 20l-4.3-4.3"/>
+          </svg>
+          <div>Select a node to inspect the evidence behind it.</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+
+/* Category colours mirror the CSS custom properties so a chip, a group label, and a
+   legend entry cannot drift apart. */
+const CATEGORY_COLORS = {
+  Process: 'var(--cat-process)', Module: 'var(--cat-module)', File: 'var(--cat-file)',
+  Registry: 'var(--cat-registry)', Service: 'var(--cat-service)', ScheduledTask: 'var(--cat-task)',
+  Autorun: 'var(--cat-autorun)', Network: 'var(--cat-network)', Dns: 'var(--cat-dns)',
+  Tls: 'var(--cat-tls)', Http: 'var(--cat-http)', Security: 'var(--cat-security)',
+  Driver: 'var(--cat-driver)', Firewall: 'var(--cat-security)', Wmi: 'var(--cat-registry)',
+};
+
+const state = {
+  session: null,
+  roots: [],
+  hidden: new Set(),
+  query: '',
+  showReads: false,
+  selected: null,
+  expanded: new Set(),
+};
+
+/* ---------------------------------------------------------------- transport */
+
+/* Inside the app the engine injects results through the WebView2 bridge; exported,
+   the data is already in the page. Detecting which lets one file do both. */
+const bridge = {
+  live: typeof window.chrome !== 'undefined' && !!window.chrome.webview,
+
+  send(type, payload) {
+    if (this.live) window.chrome.webview.postMessage(JSON.stringify({ type, payload }));
+  },
+};
+
+function boot() {
+  if (window.__CAYATRACE_DATA__) {
+    load(window.__CAYATRACE_DATA__);
+  } else if (bridge.live) {
+    window.chrome.webview.addEventListener('message', e => {
+      const msg = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+      if (msg.type === 'session') load(msg.payload);
+    });
+    bridge.send('ready', {});
+  } else {
+    renderEmpty('No session data. Open this report from CaYaTrace, or run ' +
+                '"CaYaTrace report --session <dir> --format html".');
+  }
+}
+
+function load(data) {
+  state.session = data.session || null;
+  state.roots = data.tree || [];
+  // Process nodes start open; everything below stays collapsed so an installer that
+  // touched 40,000 files does not render 40,000 rows before the analyst has looked.
+  state.roots.forEach(r => state.expanded.add(r.Id ?? r.id));
+  renderHeader();
+  renderChips();
+  renderTree();
+}
+
+/* ------------------------------------------------------------------ helpers */
+
+/* Property names differ by producer: the .NET serializer emits PascalCase, a
+   hand-built export may not. Reading both keeps the file usable either way. */
+const p = (o, name) => o?.[name] ?? o?.[name.charAt(0).toLowerCase() + name.slice(1)];
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function formatBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1).replace(/\.0$/, '') + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1).replace(/\.0$/, '') + ' MB';
+  return (n / 1073741824).toFixed(2) + ' GB';
+}
+
+/* ------------------------------------------------------------------- header */
+
+function renderHeader() {
+  const s = state.session;
+  const chip = document.getElementById('sessionChip');
+  if (!s) { chip.textContent = 'no session'; return; }
+
+  const started = p(s, 'StartedAt');
+  chip.textContent = `${p(s, 'Name') || 'session'} · ${started ? new Date(started).toLocaleString() : ''}`;
+
+  const q = p(s, 'Quality') || {};
+  const problems = [];
+  const lost = Number(p(q, 'EventsLost') || 0);
+  const dropped = Number(p(q, 'EventsDroppedBySink') || 0);
+  const fileRate = Number(p(q, 'FileNameHitRate') ?? 1);
+  const regRate = Number(p(q, 'RegistryNameHitRate') ?? 1);
+  const failures = p(q, 'CollectorFailures') || [];
+  const skipped = p(q, 'SkippedForPrivilege') || [];
+
+  if (lost > 0) problems.push(`${lost.toLocaleString()} events lost to ETW buffer pressure`);
+  if (dropped > 0) problems.push(`${dropped.toLocaleString()} events dropped before storage`);
+  if (fileRate < 0.95) problems.push(`${((1 - fileRate) * 100).toFixed(1)}% of file operations unresolved`);
+  if (regRate < 0.95) problems.push(`${((1 - regRate) * 100).toFixed(1)}% of registry operations unresolved`);
+  failures.forEach(f => problems.push(f));
+  skipped.forEach(f => problems.push(`skipped — ${f}`));
+
+  const host = document.getElementById('qualityHost');
+  if (problems.length === 0) {
+    host.innerHTML = `<div class="quality clean">
+      <div><strong>Collection was complete</strong>
+      No events were lost and every artifact resolved to a name.</div></div>`;
+    return;
+  }
+
+  /* Stated up front rather than buried. A session that lost events looks exactly
+     like a program that did less than it did, and that misreading is the single
+     most consequential mistake a reader of this report can make. */
+  host.innerHTML = `<div class="quality">
+    <div>
+      <strong>This session is incomplete — findings below are a floor, not a ceiling</strong>
+      ${problems.map(x => esc(x)).join(' · ')}
+    </div>
+  </div>`;
+}
+
+function renderChips() {
+  const counts = {};
+  const walk = n => {
+    const c = p(n, 'Category');
+    if (c && p(n, 'Kind') === 1) counts[c] = (counts[c] || 0) + (Number(p(n, 'EventCount')) || 0);
+    (p(n, 'Children') || []).forEach(walk);
+  };
+  state.roots.forEach(walk);
+
+  const host = document.getElementById('chips');
+  host.innerHTML = '';
+
+  Object.keys(counts).sort().forEach(cat => {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.type = 'button';
+    b.setAttribute('aria-pressed', String(!state.hidden.has(cat)));
+    b.style.setProperty('--cat', CATEGORY_COLORS[cat] || 'var(--primary)');
+    b.innerHTML = `<span class="dot"></span>${esc(cat)}<span class="count">${counts[cat].toLocaleString()}</span>`;
+    b.onclick = () => {
+      state.hidden.has(cat) ? state.hidden.delete(cat) : state.hidden.add(cat);
+      b.setAttribute('aria-pressed', String(!state.hidden.has(cat)));
+      renderTree();
+    };
+    host.appendChild(b);
+  });
+}
+
+/* --------------------------------------------------------------------- tree */
+
+function matches(node) {
+  if (!state.query) return true;
+  const q = state.query.toLowerCase();
+  if (String(p(node, 'Label') || '').toLowerCase().includes(q)) return true;
+  if (String(p(node, 'Sublabel') || '').toLowerCase().includes(q)) return true;
+  return (p(node, 'Facts') || []).some(f =>
+    String(p(f, 'Value') || f.value || '').toLowerCase().includes(q));
+}
+
+/* A node survives filtering if it matches, or if anything beneath it does —
+   otherwise searching for a filename would hide the process that created it. */
+function visible(node) {
+  const cat = p(node, 'Category');
+  const kind = p(node, 'Kind');
+  if (kind === 1 && cat && state.hidden.has(cat)) return false;
+  if (matches(node)) return true;
+  return (p(node, 'Children') || []).some(visible);
+}
+
+function renderTree() {
+  const host = document.getElementById('tree');
+  host.innerHTML = '';
+
+  const shown = state.roots.filter(visible);
+  if (shown.length === 0) {
+    renderEmpty(state.query
+      ? `Nothing matches "${state.query}".`
+      : 'No in-scope activity was recorded.');
+    return;
+  }
+  shown.forEach(n => host.appendChild(renderNode(n, 0)));
+}
+
+function renderEmpty(message) {
+  document.getElementById('tree').innerHTML =
+    `<div class="empty"><div>${esc(message)}</div></div>`;
+}
+
+function renderNode(node, depth) {
+  const id = p(node, 'Id');
+  const kind = Number(p(node, 'Kind') ?? 0);
+  const kindName = ['process', 'actiongroup', 'artifact', 'flow', 'httpexchange', 'detail'][kind] || 'artifact';
+
+  const wrap = document.createElement('div');
+  wrap.className = `node node-kind-${kindName}`;
+
+  const children = (p(node, 'Children') || []).filter(visible);
+  // Auto-expand while searching: a hit buried four levels down is useless if the
+  // analyst has to guess which branch to open.
+  const isOpen = state.expanded.has(id) || (!!state.query && children.length > 0);
+
+  const row = document.createElement('div');
+  row.className = 'node-row';
+  row.setAttribute('role', 'treeitem');
+  row.setAttribute('aria-selected', String(state.selected === id));
+  row.style.setProperty('--cat', CATEGORY_COLORS[p(node, 'Category')] || 'var(--primary)');
+
+  const twisty = document.createElement('span');
+  twisty.className = 'twisty' + (children.length ? (isOpen ? ' open' : '') : ' leaf');
+  twisty.textContent = '▶';
+  twisty.onclick = e => {
+    e.stopPropagation();
+    state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id);
+    renderTree();
+  };
+  row.appendChild(twisty);
+
+  const label = document.createElement('span');
+  label.className = 'node-label';
+  label.textContent = p(node, 'Label') || '';
+  row.appendChild(label);
+
+  const sub = p(node, 'Sublabel');
+  if (sub) {
+    const s = document.createElement('span');
+    s.className = 'node-sub';
+    s.textContent = sub;
+    row.appendChild(s);
+  }
+
+  const count = Number(p(node, 'EventCount') || 0);
+  if (kind === 1 && count > 0) row.appendChild(badge(count.toLocaleString(), ''));
+
+  const sent = Number(p(node, 'BytesSent') || 0);
+  const recv = Number(p(node, 'BytesReceived') || 0);
+  if (sent || recv) row.appendChild(badge(`${formatBytes(sent)} ↑ ${formatBytes(recv)} ↓`, 'bytes'));
+
+  // Attribution quality is on the row, not hidden in a panel: an edge that was
+  // inferred rather than observed changes what the reader can claim from it.
+  const conf = Number(p(node, 'Confidence') ?? 3);
+  if (conf === 1 || conf === 2) row.appendChild(badge(conf === 2 ? 'probable' : 'weak', 'inferred'));
+  if (Number(p(node, 'Source')) === 3) row.appendChild(badge('snapshot diff', 'snapshot'));
+
+  row.onclick = () => { state.selected = id; renderDetail(node); renderTree(); };
+  wrap.appendChild(row);
+
+  const facts = p(node, 'Facts') || [];
+  const from = facts.find(f => (p(f, 'Key') || f.key) === 'from');
+  const to = facts.find(f => (p(f, 'Key') || f.key) === 'to');
+  if (from || to) {
+    const t = document.createElement('div');
+    t.className = 'transition';
+    t.innerHTML =
+      `<span class="from">${esc(from ? (p(from, 'Value') || from.value) : '(not present)')}</span>` +
+      `<span class="arrow">→</span>` +
+      `<span class="to">${esc(to ? (p(to, 'Value') || to.value) : '(removed)')}</span>`;
+    wrap.appendChild(t);
+  }
+
+  if (isOpen && children.length) {
+    const kids = document.createElement('div');
+    kids.className = 'node-children';
+    children.forEach(c => kids.appendChild(renderNode(c, depth + 1)));
+
+    const truncated = Number(p(node, 'TruncatedChildren') || 0);
+    if (truncated > 0) {
+      const more = document.createElement('div');
+      more.className = 'node-row';
+      more.innerHTML = `<span class="twisty leaf"></span>
+        <span class="node-sub">… ${truncated.toLocaleString()} more not shown</span>`;
+      kids.appendChild(more);
+    }
+    wrap.appendChild(kids);
+  }
+
+  return wrap;
+}
+
+function badge(text, cls) {
+  const b = document.createElement('span');
+  b.className = 'badge ' + cls;
+  b.textContent = text;
+  return b;
+}
+
+/* ------------------------------------------------------------------ details */
+
+function renderDetail(node) {
+  const host = document.getElementById('detail');
+  const facts = p(node, 'Facts') || [];
+  const first = p(node, 'FirstSeen');
+  const last = p(node, 'LastSeen');
+
+  const rows = facts.map(f => `<tr>
+      <th>${esc(p(f, 'Key') || f.key)}</th>
+      <td>${esc(p(f, 'Value') || f.value)}</td>
+    </tr>`).join('');
+
+  const meta = [
+    ['category', p(node, 'Category')],
+    ['events', Number(p(node, 'EventCount') || 0).toLocaleString()],
+    ['first seen', first ? new Date(first).toLocaleString() : null],
+    ['last seen', last ? new Date(last).toLocaleString() : null],
+    ['sent', Number(p(node, 'BytesSent')) ? formatBytes(p(node, 'BytesSent')) : null],
+    ['received', Number(p(node, 'BytesReceived')) ? formatBytes(p(node, 'BytesReceived')) : null],
+    ['evidence rows', (p(node, 'Evidence') || []).length || null],
+  ].filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== '0')
+   .map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('');
+
+  host.innerHTML = `
+    <h2>${esc(p(node, 'Label'))}</h2>
+    <div class="muted">${esc(p(node, 'Sublabel') || '')}</div>
+    <table class="fact-table">${meta}${rows}</table>`;
+}
+
+/* --------------------------------------------------------------------- wire */
+
+document.getElementById('search').addEventListener('input', e => {
+  state.query = e.target.value.trim();
+  renderTree();
+});
+
+document.getElementById('showReads').addEventListener('change', e => {
+  state.showReads = e.target.checked;
+  bridge.send('setIncludeReads', { value: state.showReads });
+});
+
+document.getElementById('btnExpand').onclick = () => {
+  const walk = n => { state.expanded.add(p(n, 'Id')); (p(n, 'Children') || []).forEach(walk); };
+  state.roots.forEach(walk);
+  renderTree();
+};
+
+document.getElementById('btnCollapse').onclick = () => {
+  state.expanded.clear();
+  state.roots.forEach(r => state.expanded.add(p(r, 'Id')));
+  renderTree();
+};
+
+document.getElementById('btnPlan').onclick = () => {
+  if (!bridge.live) {
+    alert('Removal plans are built from the CaYaTrace app, not from an exported report.');
+    return;
+  }
+  bridge.send('buildRemovalPlan', {});
+};
+
+boot();
+</script>
+</body>
+</html>

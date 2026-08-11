@@ -264,6 +264,14 @@ public sealed class SessionStore : IDisposable
 
     // ------------------------------------------------------------ observations
 
+    /// <summary>
+    /// Direct batch write, bypassing <see cref="ObservationSink"/>. Exposed for tests
+    /// that need deterministic ordering; production writes go through the sink so they
+    /// never block a collection thread.
+    /// </summary>
+    public void WriteObservationBatchForTest(IReadOnlyList<Observation> batch)
+        => WriteObservationBatch(batch);
+
     internal void WriteObservationBatch(IReadOnlyList<Observation> batch)
     {
         if (batch.Count == 0) return;
@@ -667,6 +675,17 @@ public sealed class SessionStore : IDisposable
     {
         WriteIndented = false,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+
+        // The model types expose their collections as get-only properties initialized
+        // in place. System.Text.Json serializes those correctly but, by default,
+        // *skips* them on deserialize because there is no setter to assign — so a
+        // session round-tripped through storage came back with empty
+        // CollectorFailures, SkippedForPrivilege, and EnabledCollectors lists.
+        //
+        // That failure was silent and pointed the wrong way: a session that skipped
+        // kernel tracing for lack of privilege reloaded as "collection was complete",
+        // which is exactly the misreading the data-quality reporting exists to prevent.
+        PreferredObjectCreationHandling = System.Text.Json.Serialization.JsonObjectCreationHandling.Populate,
     };
 
     public void Dispose()

@@ -36,9 +36,14 @@
     <ProjectReference Include="..\CaYaTrace.Export\CaYaTrace.Export.csproj" />
   </ItemGroup>
 
-  <!-- The React UI is built by ui/ and embedded so the host stays a single file. -->
+  <!--
+    The UI is embedded so the host stays a single portable file, and so the exported
+    HTML report is rendered by exactly the same markup the workbench uses rather than
+    a second implementation that drifts from it.
+  -->
   <ItemGroup>
-    <EmbeddedResource Include="wwwroot\**\*" LogicalName="ui/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Assets\workbench.html" LogicalName="CaYaTrace.Assets.workbench.html" />
+    <EmbeddedResource Include="Assets\theme.css" LogicalName="CaYaTrace.Assets.theme.css" />
   </ItemGroup>
 
 </Project>

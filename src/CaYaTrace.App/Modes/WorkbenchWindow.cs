@@ -24,9 +24,19 @@ public sealed class WorkbenchWindow : Form
     private readonly string? _initialSession;
     private SessionStore? _store;
 
+    /// <summary>
+    /// Enums are written as names, not numbers.
+    /// </summary>
+    /// <remarks>
+    /// The view keys category colours and node kinds off these values, and an exported
+    /// report is read by people. <c>"Category": 3</c> is both a silent lookup failure in the
+    /// page — the chips rendered as bare numbers — and meaningless to a human opening
+    /// the JSON.
+    /// </remarks>
     private static readonly JsonSerializerOptions Json = new()
     {
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
     };
 
     public WorkbenchWindow(string? sessionPath)
@@ -187,6 +197,35 @@ public sealed class WorkbenchWindow : Form
         };
         IReadOnlyList<CausalNode> roots = builder.Build(store.Query(), options);
 
-        return JsonSerializer.Serialize(new { session, tree = roots }, Json);
+        // Findings are computed from the same rules the CLI uses, and deliberately
+        // without a model: an exported report must be reproducible by anyone opening
+        // it, and must not imply a model saw data it never saw.
+        var inScope = new HashSet<ProcessKey>(
+            processes.Snapshot().Where(static p => p.InScope).Select(static p => p.Key));
+
+        IReadOnlyList<Analysis.ScoredArtifact> findings = new Analysis.ArtifactScorer().TopFindings(
+            store.Query().Where(o => o.Actor == ProcessKey.None || inScope.Contains(o.Actor)),
+            limit: 60);
+
+        return JsonSerializer.Serialize(new
+        {
+            session,
+            tree = roots,
+            findings = findings.Select(static f => new
+            {
+                risk = f.Risk.ToString(),
+                score = f.Score,
+                category = f.Observation.Category.ToString(),
+                action = f.Observation.Action.ToString(),
+                target = f.Observation.Target,
+                target2 = f.Observation.Target2,
+                oldValue = f.Observation.OldValue,
+                newValue = f.Observation.NewValue,
+                reasons = f.Reasons,
+                seq = f.Observation.Seq,
+                source = f.Observation.Source.ToString(),
+                confidence = f.Observation.Confidence.ToString(),
+            }),
+        }, Json);
     }
 }

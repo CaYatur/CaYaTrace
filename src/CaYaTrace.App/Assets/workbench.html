@@ -36,6 +36,14 @@
     </div>
 
     <div class="session-chip" id="sessionChip">no session</div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab" id="tabFindings" role="tab" aria-selected="true" type="button">
+        Findings<span class="badge" id="findingCount">0</span>
+      </button>
+      <button class="tab" id="tabTree" role="tab" aria-selected="false" type="button">Causal tree</button>
+    </div>
+
     <div class="topbar-spacer"></div>
 
     <button class="btn btn-ghost" id="btnExpand" type="button">Expand all</button>
@@ -55,7 +63,8 @@
   <div id="qualityHost"></div>
 
   <div class="panes">
-    <main class="tree-pane" id="tree" role="tree" aria-label="Causal tree"></main>
+    <main class="tree-pane" id="findings" aria-label="Findings"></main>
+    <main class="tree-pane" id="tree" role="tree" aria-label="Causal tree" hidden></main>
     <aside class="detail-pane" id="detail">
       <div class="empty">
         <div>
@@ -85,6 +94,8 @@ const CATEGORY_COLORS = {
 
 const state = {
   session: null,
+  findings: [],
+  view: 'findings',
   roots: [],
   hidden: new Set(),
   query: '',
@@ -123,12 +134,126 @@ function boot() {
 function load(data) {
   state.session = data.session || null;
   state.roots = data.tree || [];
+  state.findings = data.findings || [];
   // Process nodes start open; everything below stays collapsed so an installer that
   // touched 40,000 files does not render 40,000 rows before the analyst has looked.
   state.roots.forEach(r => state.expanded.add(r.Id ?? r.id));
   renderHeader();
   renderChips();
+  renderFindings();
   renderTree();
+  setView(state.findings.length > 0 ? 'findings' : 'tree');
+}
+
+/* ----------------------------------------------------------------- views */
+
+function setView(view) {
+  state.view = view;
+  // The detail pane exists to explain a selected tree node. In the findings view each
+  // card already carries its own reasons, so the pane would only steal width.
+  document.querySelector('.panes').classList.toggle('single', view === 'findings');
+  document.getElementById('detail').hidden = view === 'findings';
+  document.getElementById('findings').hidden = view !== 'findings';
+  document.getElementById('tree').hidden = view !== 'tree';
+  document.getElementById('tabFindings').setAttribute('aria-selected', String(view === 'findings'));
+  document.getElementById('tabTree').setAttribute('aria-selected', String(view === 'tree'));
+}
+
+const RISK_ORDER = ['Critical', 'High', 'Medium', 'Low', 'Info'];
+
+/* Findings lead because they answer the question an analyst opens the report with.
+   The tree answers the follow-up: how did this come about. */
+function renderFindings() {
+  const host = document.getElementById('findings');
+  document.getElementById('findingCount').textContent = state.findings.length;
+  host.innerHTML = '';
+
+  const visible = state.findings.filter(f => {
+    if (state.hidden.has(f.category)) return false;
+    if (!state.query) return true;
+    const q = state.query.toLowerCase();
+    return String(f.target || '').toLowerCase().includes(q)
+        || String(f.target2 || '').toLowerCase().includes(q)
+        || (f.reasons || []).some(r => r.toLowerCase().includes(q));
+  });
+
+  if (visible.length === 0) {
+    host.innerHTML = `<div class="empty"><div>${esc(state.query
+      ? `Nothing matches "${state.query}".`
+      : 'No notable changes were attributed to the subject.')}</div></div>`;
+    return;
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'findings';
+
+  for (const risk of RISK_ORDER) {
+    const group = visible.filter(f => f.risk === risk);
+    if (group.length === 0) continue;
+
+    const section = document.createElement('div');
+    section.className = 'risk-group';
+
+    const head = document.createElement('div');
+    head.className = `risk-head risk-${risk.toLowerCase()}`;
+    head.innerHTML = `<span>${esc(risk)}</span><span class="badge">${group.length}</span><span class="rule"></span>`;
+    section.appendChild(head);
+
+    for (const finding of group) section.appendChild(renderFinding(finding, risk));
+    wrap.appendChild(section);
+  }
+
+  host.appendChild(wrap);
+}
+
+function renderFinding(finding, risk) {
+  const el = document.createElement('div');
+  el.className = `finding risk-${risk.toLowerCase()}`;
+
+  const target = finding.target2 && finding.category === 'Registry'
+    ? `${finding.target}::${finding.target2}`
+    : finding.target;
+
+  const verb = String(finding.action || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2').toUpperCase();
+
+  el.innerHTML =
+    `<div class="finding-target"><span class="finding-verb">${esc(verb)}</span>${esc(target)}</div>`;
+
+  // A registry transition is the thing the analyst came for; show it inline
+  // rather than behind a click.
+  if (finding.oldValue || finding.newValue) {
+    const change = document.createElement('div');
+    change.className = 'finding-change';
+    change.innerHTML =
+      `<span class="from">${esc(finding.oldValue ?? '(not present)')}</span>` +
+      `<span class="arrow">→</span>` +
+      `<span class="to">${esc(finding.newValue ?? '(removed)')}</span>`;
+    el.appendChild(change);
+  }
+
+  if ((finding.reasons || []).length > 0) {
+    const list = document.createElement('ul');
+    list.className = 'finding-reasons';
+    for (const reason of finding.reasons) {
+      const item = document.createElement('li');
+      item.textContent = reason;
+      list.appendChild(item);
+    }
+    el.appendChild(list);
+  }
+
+  if (finding.source === 'SnapshotDiff' || finding.confidence === 'None') {
+    const note = document.createElement('div');
+    note.className = 'finding-reasons';
+    note.style.color = 'var(--text-muted)';
+    note.textContent = finding.source === 'SnapshotDiff'
+      ? 'found by comparing system state before and after; no process could be attributed'
+      : 'this change could not be attributed to a process';
+    el.appendChild(note);
+  }
+
+  return el;
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -197,7 +322,7 @@ function renderChips() {
   const counts = {};
   const walk = n => {
     const c = p(n, 'Category');
-    if (c && p(n, 'Kind') === 1) counts[c] = (counts[c] || 0) + (Number(p(n, 'EventCount')) || 0);
+    if (c && p(n, 'Kind') === 'ActionGroup') counts[c] = (counts[c] || 0) + (Number(p(n, 'EventCount')) || 0);
     (p(n, 'Children') || []).forEach(walk);
   };
   state.roots.forEach(walk);
@@ -215,6 +340,7 @@ function renderChips() {
     b.onclick = () => {
       state.hidden.has(cat) ? state.hidden.delete(cat) : state.hidden.add(cat);
       b.setAttribute('aria-pressed', String(!state.hidden.has(cat)));
+      renderFindings();
       renderTree();
     };
     host.appendChild(b);
@@ -236,8 +362,7 @@ function matches(node) {
    otherwise searching for a filename would hide the process that created it. */
 function visible(node) {
   const cat = p(node, 'Category');
-  const kind = p(node, 'Kind');
-  if (kind === 1 && cat && state.hidden.has(cat)) return false;
+  if (p(node, 'Kind') === 'ActionGroup' && cat && state.hidden.has(cat)) return false;
   if (matches(node)) return true;
   return (p(node, 'Children') || []).some(visible);
 }
@@ -263,8 +388,11 @@ function renderEmpty(message) {
 
 function renderNode(node, depth) {
   const id = p(node, 'Id');
-  const kind = Number(p(node, 'Kind') ?? 0);
-  const kindName = ['process', 'actiongroup', 'artifact', 'flow', 'httpexchange', 'detail'][kind] || 'artifact';
+  // Enum names, not ordinals: the payload writes them as strings so the report
+  // stays readable and a renamed enum member fails loudly instead of silently
+  // shifting every node to the wrong kind.
+  const kind = String(p(node, 'Kind') ?? 'Artifact');
+  const kindName = kind.toLowerCase();
 
   const wrap = document.createElement('div');
   wrap.className = `node node-kind-${kindName}`;
@@ -304,7 +432,7 @@ function renderNode(node, depth) {
   }
 
   const count = Number(p(node, 'EventCount') || 0);
-  if (kind === 1 && count > 0) row.appendChild(badge(count.toLocaleString(), ''));
+  if (kind === 'ActionGroup' && count > 0) row.appendChild(badge(count.toLocaleString(), ''));
 
   // Disk and network totals are shown separately. Folding file writes into a "sent"
   // figure would make a process that wrote to a local cache look like one that
@@ -318,9 +446,9 @@ function renderNode(node, depth) {
 
   // Attribution quality is on the row, not hidden in a panel: an edge that was
   // inferred rather than observed changes what the reader can claim from it.
-  const conf = Number(p(node, 'Confidence') ?? 3);
-  if (conf === 1 || conf === 2) row.appendChild(badge(conf === 2 ? 'probable' : 'weak', 'inferred'));
-  if (Number(p(node, 'Source')) === 3) row.appendChild(badge('snapshot diff', 'snapshot'));
+  const conf = String(p(node, 'Confidence') ?? 'Direct');
+  if (conf === 'Probable' || conf === 'Weak') row.appendChild(badge(conf.toLowerCase(), 'inferred'));
+  if (String(p(node, 'Source')) === 'SnapshotDiff') row.appendChild(badge('snapshot diff', 'snapshot'));
 
   row.onclick = () => { state.selected = id; renderDetail(node); renderTree(); };
   wrap.appendChild(row);
@@ -399,6 +527,7 @@ function renderDetail(node) {
 
 document.getElementById('search').addEventListener('input', e => {
   state.query = e.target.value.trim();
+  renderFindings();
   renderTree();
 });
 
@@ -406,6 +535,9 @@ document.getElementById('showReads').addEventListener('change', e => {
   state.showReads = e.target.checked;
   bridge.send('setIncludeReads', { value: state.showReads });
 });
+
+document.getElementById('tabFindings').onclick = () => setView('findings');
+document.getElementById('tabTree').onclick = () => setView('tree');
 
 document.getElementById('btnExpand').onclick = () => {
   const walk = n => { state.expanded.add(p(n, 'Id')); (p(n, 'Children') || []).forEach(walk); };

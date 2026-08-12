@@ -253,6 +253,119 @@ input:focus, select:focus {
   opacity: 0.75;
 }
 
+/* ---------------------------------------------------------------- tabs */
+
+.tabs { display: flex; gap: 4px; }
+
+.tab {
+  padding: 7px 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.tab:hover { color: var(--text-secondary); background: var(--bg-medium); }
+
+.tab[aria-selected="true"] {
+  background: var(--bg-light);
+  color: var(--text-primary);
+  border-color: var(--border-color);
+  box-shadow: inset 0 -2px 0 var(--primary);
+}
+
+.tab .badge { margin-left: 6px; }
+
+/* ------------------------------------------------------------- findings */
+
+.findings { padding: 4px 0 40px; }
+
+.risk-group { margin-bottom: 26px; }
+
+.risk-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.risk-head .rule { flex: 1; height: 1px; background: var(--border-color); }
+
+/* Severity colour is carried by a left edge and a label, never by hue alone. */
+.risk-critical { color: #fca5a5; }
+.risk-high     { color: #fdba74; }
+.risk-medium   { color: #fde68a; }
+.risk-low      { color: #a5b4fc; }
+.risk-info     { color: var(--text-muted); }
+
+.finding {
+  position: relative;
+  padding: 12px 16px 12px 18px;
+  margin-bottom: 8px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  transition: var(--transition);
+}
+
+.finding::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  background: currentColor;
+}
+
+.finding:hover { border-color: var(--border-strong); }
+
+.finding-target {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.finding-verb {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-light);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.finding-reasons {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.finding-reasons li { margin: 2px 0; }
+
+.finding-change {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--bg-dark);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 /* ------------------------------------------------------------ quality banner */
 
 .quality {
@@ -281,6 +394,9 @@ input:focus, select:focus {
 .panes {
   display: grid;
   grid-template-columns: 1fr 380px;
+}
+
+.panes.single { grid-template-columns: 1fr;
   min-height: 0;
   overflow: hidden;
 }

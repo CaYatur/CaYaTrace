@@ -4,6 +4,52 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-08-13
+
+Everything here came from someone using 0.2.0 and reporting what did not work.
+
+### Added
+
+**Conversations between processes on one machine.** A subject opened four connections to
+`127.0.0.1` and the network view showed four rows of `0 B` — no contents, no peer, nothing
+to conclude from. There was nothing to fix in the packet path: the Windows packet monitor
+observes network adapters and loopback traffic crosses none of them.
+
+Winsock does see it. A new collector on the Ancillary Function Driver reports, for
+conversations that never leave the machine: the process, the socket, both addresses, bytes
+each way, sends and receives, and the program at the other end. Pairing works from either
+side, and ports already being listened on when recording starts are read from the
+connection table, because a service that came up at boot emits no bind event to observe.
+It does not report the bytes, and says so — the provider carries a pointer into the
+sending process, not a copy, and following it would mean reading another process's memory
+while it runs.
+
+**Assistant controls.** The chat has its own model picker with "no model" first, and a stop
+button.
+
+### Fixed
+
+- **The assistant hung whenever a model was configured.** `GenerateAsync` takes an `object`
+  in third position, so passing a cancellation token there compiled, boxed the token into
+  the response-format field, and left the real token defaulted — the request could not be
+  cancelled and its own timeout never fired.
+- **The exported report offered HTML and Text and wrote JSON for both.** It now produces
+  what was asked for, including a copy of itself for HTML.
+- **The save dialog appeared to be writing an executable.** A session recorded from
+  `Setup.exe` is named after it, so the suggested name was `Setup.exe.html` — and Windows
+  hides the last known extension.
+- **Conversation contents were unreachable in an exported report.** The bodies lived in the
+  session database and the report has no engine behind it; a bounded preview now travels
+  with the report at full depth.
+- **Remediate was disabled until a session was loaded**, which made the one workflow
+  packages exist for — carrying one to a machine that has never recorded anything —
+  unreachable from the window.
+- **A recording reported 59.7% of registry operations unresolved while every change had
+  been named.** Reads were resolved-or-discarded on the spot and counted against the same
+  figure. They are parked and re-resolved like everything else now, dropped before changes
+  are when memory runs short, and measured separately — so the figure answers "is the
+  evidence complete" rather than "how much of everything the machine did could be named".
+
 ## [0.2.0] — 2026-08-12
 
 Recorded the same installer with two other tools at the same time, on the same machine,
@@ -182,5 +228,6 @@ Embedding removal payloads into the executable was tested and rejected: patching
 into a .NET single-file bundle truncated a 67 MB host to 9.6 MB and corrupted it. Packages
 ship as `.ctpkg` sidecars. See [PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md).
 
+[0.3.0]: https://github.com/CaYatur/CaYaTrace/releases/tag/v0.3.0
 [0.2.0]: https://github.com/CaYatur/CaYaTrace/releases/tag/v0.2.0
 [0.1.0]: https://github.com/CaYatur/CaYaTrace/releases/tag/v0.1.0

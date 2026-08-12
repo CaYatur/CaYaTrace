@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-dc2626.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-111826.svg)](#requirements)
 [![.NET](https://img.shields.io/badge/.NET-8.0-182438.svg)](#requirements)
-[![Status](https://img.shields.io/badge/status-0.2.0%20preview-b91c1c.svg)](docs/ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-0.3.0%20preview-b91c1c.svg)](docs/ROADMAP.md)
 
 [Türkçe README](README.tr.md) · [Architecture](docs/ARCHITECTURE.md) · [Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md)
 
@@ -69,7 +69,7 @@ machine before anything is touched.
 - **Removal that cannot brick the machine.** Non-overridable deny list, fingerprint
   verification, quarantine instead of delete, rollback journal, dry run by default.
 
-## Status — 0.2.0 preview
+## Status — 0.3.0 preview
 
 This is an early release. What is real today versus designed is tracked honestly:
 
@@ -102,6 +102,7 @@ This is an early release. What is real today versus designed is tracked honestly
 | Ask the session: answers computed from the recording, a model only rewords them | ✅ working |
 | Removal progress, self-protection disarming, and quarantine keep/restore/delete | ✅ working |
 | Fleet: join from the window, per-machine live view, remote stop of a process or service | ✅ working |
+| Conversations between processes on this machine, with the program at each end | ✅ working |
 
 ## The workbench
 

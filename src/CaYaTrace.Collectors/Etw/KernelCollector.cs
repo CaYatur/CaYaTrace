@@ -316,11 +316,28 @@ public sealed class KernelCollector : ICollector
             if (owner != ProcessKey.None) ctx.Processes.SetThreadOwner((uint)data.ThreadID, owner);
 
             // A thread created in a process other than its creator is process
-            // injection — one of the highest-value signals this tool can produce.
-            if (data.ParentProcessID > 0 && data.ParentProcessID != data.ProcessID)
+            // injection — one of the highest-value signals this tool can produce, and
+            // therefore one worth being strict about, because a false one at critical
+            // severity sits at the top of every report and trains the reader to skip
+            // the section.
+            //
+            // Two exclusions, both measured against real captures:
+            //
+            //   * An owning process id of 0. That is a thread the kernel could not
+            //     attribute, not one belonging to the idle process. It produced
+            //     "REMOTE THREAD Idle (0)" as the two highest-ranked findings of a
+            //     252,000-event session.
+            //
+            //   * The initial thread of a process that has just started. Every process
+            //     launch has its first thread created by the launcher, so this rule
+            //     without the exclusion reports every CreateProcess as injection — five
+            //     critical findings in a session whose subject started five programs,
+            //     all of them ordinary.
+            if (data.ProcessID > 0 && data.ParentProcessID > 0 && data.ParentProcessID != data.ProcessID)
             {
                 ProcessKey injector = ResolveActor(ctx, data.ParentProcessID, data.TimeStamp);
                 if (injector == ProcessKey.None || injector == owner) return;
+                if (IsProcessStartup(ctx, owner, data.TimeStamp)) return;
 
                 ctx.Emit(new Observation
                 {
@@ -940,6 +957,29 @@ public sealed class KernelCollector : ICollector
     {
         ProcessNode? node = ctx.Processes.Get(key);
         return node is null ? key.ToString() : $"{node.ImageName} ({node.Pid})";
+    }
+
+    /// <summary>
+    /// True when a thread is one a process was born with rather than one injected into
+    /// it later.
+    /// </summary>
+    /// <remarks>
+    /// Decided on age rather than on thread ordering, because thread events arrive
+    /// interleaved and a rundown can deliver an existing thread at any point. A window
+    /// of a quarter second is generously longer than the gap between a process start
+    /// event and its initial thread event, and far shorter than the time it takes an
+    /// operator to launch something and a second program to then inject into it.
+    /// </remarks>
+    private static bool IsProcessStartup(CollectorContext ctx, ProcessKey owner, DateTimeOffset when)
+    {
+        ProcessNode? node = ctx.Processes.Get(owner);
+
+        // Unknown process: the safer reading is that this is a start we have not seen
+        // yet, not an injection into something we cannot name.
+        if (node is null) return true;
+
+        TimeSpan age = when - node.StartTime;
+        return age >= TimeSpan.Zero && age < TimeSpan.FromMilliseconds(250);
     }
 
     private static EventStatus StatusOf(int ntStatus) => ntStatus switch

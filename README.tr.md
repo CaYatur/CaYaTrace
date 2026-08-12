@@ -93,7 +93,9 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Pktmon ile paket yakalama | 📐 tasarlandı |
 | Tam istek gövdeleri için araya giren proxy (isteğe bağlı) | 📐 tasarlandı |
 | Çoklu VM karşılaştırması (`compare`) ve ölçülmüş yol şablonlama | ✅ çalışıyor |
-| VirusTotal ve Ollama entegrasyonu | 📐 tasarlandı |
+| Gerekçeleri görünür risk puanlama | ✅ çalışıyor |
+| Model yeterlilik testli Ollama entegrasyonu | ✅ çalışıyor |
+| VirusTotal entegrasyonu | 📐 tasarlandı |
 | Kategori seçimli HTML / CSV dışa aktarma | 📐 tasarlandı |
 
 ## Hızlı başlangıç

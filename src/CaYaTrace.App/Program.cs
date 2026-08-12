@@ -55,6 +55,7 @@ public static class Program
                 "report" => ReportCommand.Run(parsed),
                 "remediate" => RemediateCommand.Run(parsed),
                 "compare" => CompareCommand.Run(parsed),
+                "explain" => ExplainCommand.Run(parsed),
                 "agent" => AgentCommand.Run(parsed),
                 "version" => PrintVersion(),
                 "help" => CommandLine.PrintUsage(),

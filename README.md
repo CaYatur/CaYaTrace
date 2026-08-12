@@ -90,7 +90,9 @@ This is an early release. What is real today versus designed is tracked honestly
 | Packet capture via Pktmon | 📐 designed |
 | Intercepting proxy for full request bodies (opt-in) | 📐 designed |
 | Multi-VM comparison (`compare`) with measured path templating | ✅ working |
-| VirusTotal and Ollama integration | 📐 designed |
+| Risk scoring with visible reasons | ✅ working |
+| Ollama integration with model capability testing | ✅ working |
+| VirusTotal integration | 📐 designed |
 | HTML / CSV export with category selection | 📐 designed |
 
 ## Quick start

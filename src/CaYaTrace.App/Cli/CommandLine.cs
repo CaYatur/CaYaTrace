@@ -24,7 +24,7 @@ public sealed class CommandLine
 
     private static readonly HashSet<string> Verbs = new(StringComparer.OrdinalIgnoreCase)
     {
-        "trace", "report", "remediate", "compare", "agent", "version", "help",
+        "trace", "report", "remediate", "compare", "explain", "agent", "version", "help",
     };
 
     public static CommandLine Parse(string[] args)
@@ -111,6 +111,7 @@ public sealed class CommandLine
               CaYaTrace report [options]               Render a recorded session
               CaYaTrace remediate [options]            Apply a removal package
               CaYaTrace compare <dirA> <dirB> [...]   Compare recordings from several machines
+              CaYaTrace explain [options]              Rank and explain a session's findings
               CaYaTrace agent  [options]               Run as a fleet collection agent
               CaYaTrace version
 
@@ -148,6 +149,19 @@ public sealed class CommandLine
               Comparing two machines is what turns a guessed path pattern into a
               measured one, so a package built here still matches on a third machine
               that names its random directories differently again.
+
+            EXPLAIN
+              --session <dir|file>   Session to explain
+              --model <name>         Local Ollama model to label findings with (optional)
+              --check-models         Score every installed model and recommend one
+              --ollama <url>         Ollama endpoint (default http://localhost:11434)
+              --max-findings <n>     How many top-ranked artifacts to include (default 30)
+
+              Ranking, scoring, and the reasons behind them are CaYaTrace's own rules and
+              need no model. A model only adds a label per artifact, is tested against
+              known answers before it is believed, and has its answers checked against
+              the rules. Run --check-models first: small and coder-tuned models score
+              poorly at this, and knowing that beats reading their guesses.
 
             AGENT
               --host <addr:port>     Host to report to once paired

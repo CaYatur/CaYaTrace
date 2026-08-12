@@ -468,7 +468,7 @@
     "network.scope.LocalNetwork": "On the local network",
     "network.scope.LocalNetwork_hint": "Another machine on the same network. This is how software coordinates with its own components, and it appears in no firewall log and no proxy.",
     "network.scope.Loopback": "On this machine",
-    "network.scope.Loopback_hint": "One process on this machine talking to another. A temporary local server a program opens for its own use shows up here.",
+    "network.scope.Loopback_hint": "One process on this machine talking to another. Shown when contents were captured by the intercepting proxy.",
     "network.scope.Internet": "On the internet",
     "network.scope.Internet_hint": "A host outside this network.",
     "network.inbound": "came in",
@@ -480,7 +480,8 @@
     "network.body_binary": "Not text, so it is shown as bytes.",
     "network.body_truncated": "Only the beginning was kept. The start of a conversation is where the protocol, the request and the credentials are; the rest is usually payload.",
     "network.body_unknown": "That content is not in this session.",
-    "timeline.include_existing": "Also show what was already running"
+    "timeline.include_existing": "Also show what was already running",
+    "network.loopback_not_captured": "Conversations between two processes on this machine are listed under Connections but their contents are not captured here: the Windows packet monitor observes network adapters, and traffic that never leaves the machine does not cross one. Use the intercepting proxy for local HTTP."
   },
   "tr": {
     "app.title": "CaYaTrace",
@@ -939,7 +940,7 @@
     "network.scope.LocalNetwork": "Yerel ağda",
     "network.scope.LocalNetwork_hint": "Aynı ağdaki başka bir makine. Yazılımın kendi bileşenleriyle haberleşme biçimi budur ve hiçbir güvenlik duvarı günlüğünde ya da vekil sunucuda görünmez.",
     "network.scope.Loopback": "Bu makinede",
-    "network.scope.Loopback_hint": "Bu makinedeki bir sürecin bir diğeriyle konuşması. Bir programın kendi kullanımı için açtığı geçici yerel sunucu burada görünür.",
+    "network.scope.Loopback_hint": "Bu makinedeki bir sürecin bir diğeriyle konuşması. İçerik araya giren vekil sunucu tarafından yakalandığında görünür.",
     "network.scope.Internet": "İnternette",
     "network.scope.Internet_hint": "Bu ağın dışındaki bir sunucu.",
     "network.inbound": "gelen",
@@ -951,6 +952,7 @@
     "network.body_binary": "Metin olmadığı için baytlar hâlinde gösteriliyor.",
     "network.body_truncated": "Yalnızca başı saklandı. Bir konuşmanın başı; protokolün, isteğin ve kimlik bilgilerinin bulunduğu yerdir, gerisi genellikle veridir.",
     "network.body_unknown": "Bu içerik bu oturumda yok.",
-    "timeline.include_existing": "Zaten çalışmakta olanları da göster"
+    "timeline.include_existing": "Zaten çalışmakta olanları da göster",
+    "network.loopback_not_captured": "Bu makinedeki iki süreç arasındaki konuşmalar Bağlantılar altında listelenir, ancak içerikleri burada yakalanmaz: Windows paket izleyicisi ağ bağdaştırıcılarını gözlemler ve makineden hiç çıkmayan trafik bir bağdaştırıcıdan geçmez. Yerel HTTP için araya giren vekil sunucuyu kullanın."
   }
 }

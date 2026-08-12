@@ -2398,6 +2398,22 @@ function renderConversations(host, rows) {
     byScope[scope].forEach(r => card.appendChild(renderConversation(r)));
     host.appendChild(card);
   });
+
+  /*
+   * Said rather than left to be inferred. Conversations between two processes on this
+   * machine are recorded as connections and their contents are not, because the Windows
+   * packet monitor observes network adapters and traffic that never leaves the machine
+   * does not cross one. A reader who opens this looking for a program's chatter with its
+   * own local helper would otherwise conclude there was none.
+   */
+  if (!byScope.Loopback && loopbackFlowCount()) {
+    host.appendChild(el('div', 'hint', t('network.loopback_not_captured')));
+  }
+}
+
+function loopbackFlowCount() {
+  return (state.network.flows || []).filter(f =>
+    String(f.remote || '').startsWith('127.') || String(f.remote || '').startsWith('[::1]')).length;
 }
 
 function renderConversation(r) {
@@ -2816,8 +2832,15 @@ function renderQuarantine() {
   if (!host) return;
   host.innerHTML = '';
 
+  // Either source can be the current one: a removal that just finished reports what it
+  // is holding, and a later listing reports it again. Both carry the folder, and the
+  // buttons below need it — sending the disposition without one leaves the host guessing
+  // from whatever plan happened to be loaded.
   const q = state.quarantine;
-  const held = q && q.held ? q.held : (state.remediation && state.remediation.held) || [];
+  const r = state.remediation;
+
+  const held = (q && q.held) || (r && r.held) || [];
+  const root = (q && q.root) || (r && r.root) || null;
   if (!held.length) return;
 
   const card = el('div', 'card');
@@ -2841,19 +2864,19 @@ function renderQuarantine() {
 
   const keep = el('button', 'btn btn-ghost', t('quarantine.keep'));
   keep.type = 'button';
-  keep.onclick = () => bridge.send('quarantineApply', { disposition: 'keep', root: (q && q.root) || null });
+  keep.onclick = () => bridge.send('quarantineApply', { disposition: 'keep', root });
   actions.appendChild(keep);
 
   const restore = el('button', 'btn btn-ghost', t('quarantine.restore'));
   restore.type = 'button';
   restore.onclick = () => confirmThen('quarantine.confirm_restore',
-    () => bridge.send('quarantineApply', { disposition: 'restore', root: (q && q.root) || null }));
+    () => bridge.send('quarantineApply', { disposition: 'restore', root }));
   actions.appendChild(restore);
 
   const del = el('button', 'btn btn-danger', t('quarantine.delete'));
   del.type = 'button';
   del.onclick = () => confirmThen('quarantine.confirm_delete',
-    () => bridge.send('quarantineApply', { disposition: 'delete', root: (q && q.root) || null }));
+    () => bridge.send('quarantineApply', { disposition: 'delete', root }));
   actions.appendChild(del);
 
   card.appendChild(actions);

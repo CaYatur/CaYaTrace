@@ -118,6 +118,34 @@ public sealed class ProcessNode
     public bool IsAlive(DateTimeOffset at)
         => at >= StartTime && (ExitTime is null || at <= ExitTime.Value);
 
+    /// <summary>
+    /// True when this binary carries a valid signature naming Microsoft.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The trust test the analysis layers share, and it lives here so there is one
+    /// answer. Three separate rules depend on it: whether a cross-process thread is
+    /// Windows going about its business, whether a write into an OS-managed cache is the
+    /// OS doing it, and whether a registry change is Windows adjusting its own
+    /// configuration. Three copies of it would eventually disagree.
+    /// </para>
+    /// <para>
+    /// Both halves are required. A valid signature from someone else is a real signature
+    /// and says nothing about whether that code belongs where it is; a Microsoft name on
+    /// an invalid, expired or untrusted-root signature is a claim, not a fact.
+    /// </para>
+    /// <para>
+    /// Deliberately not a path check. Software that wants to look like Windows installs
+    /// itself inside the Windows directory — the sample these rules were tuned against
+    /// stages into <c>%WINDIR%\SysWOW64\7669\</c> — so a directory can be occupied by
+    /// anything while a signature cannot.
+    /// </para>
+    /// </remarks>
+    public bool IsMicrosoftSigned()
+        => Signature == SignatureState.SignedValid
+           && Signer is { Length: > 0 } signer
+           && signer.Contains("Microsoft", StringComparison.OrdinalIgnoreCase);
+
     public override string ToString()
         => $"{ImageName} ({Pid})";
 }

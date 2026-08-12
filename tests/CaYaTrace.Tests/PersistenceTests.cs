@@ -220,6 +220,144 @@ public sealed class PersistenceAnalyzerTests
         Assert.Contains(record.Reasons, r => r.Contains("restarts itself"));
     }
 
+    /// <summary>
+    /// One installation is one record, however many ways it was observed.
+    /// </summary>
+    /// <remarks>
+    /// Measured on a real capture of one service and one task: the service appeared twice
+    /// and the task three times. The kernel reports whatever case the writer used, the
+    /// inventory reports the bare name, the task's registry key is a GUID, its tree entry
+    /// is the name shouted, and its on-disk record is the path. Four spellings, one thing.
+    /// </remarks>
+    [Fact]
+    public void TheSameServiceSeenTwoWaysIsOneRecord()
+    {
+        IReadOnlyList<PersistenceRecord> records = new PersistenceAnalyzer().Analyze(new[]
+        {
+            // As the kernel reported it: shouted, under its registry key.
+            Registry(@"HKLM\SYSTEM\ControlSet001\Services\CAYATRACEPROBESVC", "Start", "2", 1),
+            Registry(@"HKLM\SYSTEM\ControlSet001\Services\CAYATRACEPROBESVC", "ImagePath",
+                @"C:\ProgramData\Probe\a1b2c3d4.exe", 2),
+
+            // As the before/after inventory reported it: the bare name, whole record.
+            new Observation
+            {
+                Seq = 3,
+                Timestamp = new DateTimeOffset(2026, 8, 12, 14, 20, 1, TimeSpan.Zero),
+                Category = EventCategory.Service,
+                Action = EventAction.ServiceInstall,
+                Target = "CaYaTraceProbeSvc",
+                Target2 = "service",
+                Details = """{"Name":"CaYaTraceProbeSvc","DisplayName":"9f8e7d6c","ObjectName":"LocalSystem"}""",
+                Source = EvidenceSource.SnapshotDiff,
+                Confidence = AttributionConfidence.None,
+            },
+        });
+
+        PersistenceRecord record = Assert.Single(records);
+
+        // The readable spelling wins — it is what an operator will search for.
+        Assert.Equal("CaYaTraceProbeSvc", record.Identity);
+
+        // And both halves of the story survive the merge.
+        Assert.Equal(@"C:\ProgramData\Probe\a1b2c3d4.exe", record.Command);
+        Assert.Equal("9f8e7d6c", record.DisplayName);
+        Assert.Contains(record.Traits, t => t.Contains("LocalSystem"));
+    }
+
+    /// <summary>
+    /// A startup entry names the program it starts, not the key it lives in.
+    /// </summary>
+    /// <remarks>
+    /// The inventory writes an autorun as one <c>key::value</c> string and the kernel
+    /// reports the key and value separately. Measured: the same Run entry appeared twice,
+    /// once called <c>CaYaTraceProbe</c> and once called
+    /// <c>HKCU\…\Run::CaYaTraceProbe</c>, and neither said what it ran.
+    /// </remarks>
+    [Fact]
+    public void AStartupEntryIsOneRecordThatNamesWhatItRuns()
+    {
+        const string Key = @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+
+        IReadOnlyList<PersistenceRecord> records = new PersistenceAnalyzer().Analyze(new[]
+        {
+            Registry(Key, "CaYaTraceProbe", @"C:\ProgramData\Probe\rollcall.exe", 1),
+            new Observation
+            {
+                Seq = 2,
+                Timestamp = new DateTimeOffset(2026, 8, 12, 14, 20, 1, TimeSpan.Zero),
+                Category = EventCategory.Autorun,
+                Action = EventAction.AutorunAdd,
+                Target = Key + "::CaYaTraceProbe",
+                Target2 = "autorun",
+                NewValue = @"C:\ProgramData\Probe\rollcall.exe",
+                Source = EvidenceSource.SnapshotDiff,
+                Confidence = AttributionConfidence.None,
+            },
+        });
+
+        PersistenceRecord record = Assert.Single(records);
+        Assert.Equal("CaYaTraceProbe", record.Identity);
+        Assert.Equal(@"C:\ProgramData\Probe\rollcall.exe", record.Command);
+    }
+
+    /// <summary>
+    /// A task says what it runs in exactly one place, and it is not the registry.
+    /// </summary>
+    [Fact]
+    public void ATaskReportsTheProgramItRunsNotItsOwnName()
+    {
+        PersistenceRecord record = Assert.Single(new PersistenceAnalyzer().Analyze(new[]
+        {
+            new Observation
+            {
+                Seq = 1,
+                Timestamp = new DateTimeOffset(2026, 8, 12, 14, 20, 0, TimeSpan.Zero),
+                Category = EventCategory.ScheduledTask,
+                Action = EventAction.TaskRegister,
+                Target = @"\CaYaTraceProbeTask",
+                Target2 = "task",
+                Details = """
+                    {"Path":"\\CaYaTraceProbeTask","Definition":"<?xml version=\"1.0\"?><Task><Actions><Exec><Command>C:\\ProgramData\\Probe\\rollcall.exe</Command><Arguments>-quiet</Arguments></Exec></Actions></Task>"}
+                    """,
+                Source = EvidenceSource.SnapshotDiff,
+                Confidence = AttributionConfidence.None,
+            },
+        }));
+
+        Assert.Equal(PersistenceKind.ScheduledTask, record.Kind);
+        Assert.Equal(@"C:\ProgramData\Probe\rollcall.exe -quiet", record.Command);
+    }
+
+    /// <summary>
+    /// A key that was created and left empty is not an installation.
+    /// </summary>
+    /// <remarks>
+    /// Measured: an idle capture of a machine doing nothing produced four persistence
+    /// entries — Explorer touching three CLSID keys and a service host touching the
+    /// TCP/IP service — every one of them with no values and no command.
+    /// </remarks>
+    [Fact]
+    public void AnEmptyKeyIsNotPersistence()
+    {
+        var observations = new[]
+        {
+            new Observation
+            {
+                Seq = 1,
+                Timestamp = DateTimeOffset.UtcNow,
+                Category = EventCategory.Registry,
+                Action = EventAction.KeyCreate,
+                Actor = new ProcessKey(999, 0xAAAA, 0),
+                Target = @"HKLM\SOFTWARE\Classes\CLSID\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",
+                Source = EvidenceSource.KernelEtw,
+                Confidence = AttributionConfidence.Direct,
+            },
+        };
+
+        Assert.Empty(new PersistenceAnalyzer().Analyze(observations));
+    }
+
     /// <summary>Each value under a run key is its own entry; the key is not the subject.</summary>
     [Fact]
     public void RunKeyValuesAreSeparateEntries()

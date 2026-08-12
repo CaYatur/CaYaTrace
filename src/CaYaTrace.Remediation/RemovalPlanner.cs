@@ -86,7 +86,7 @@ public sealed class RemovalPlanner
 
         foreach (Observation o in _store.Query(new ObservationQuery { PersistentChangesOnly = true }))
         {
-            if (_options.ScopedOnly && !IsInScope(o, processes)) continue;
+            if (_options.ScopedOnly && !IsDelegated(o) && !IsInScope(o, processes)) continue;
 
             RemovalItem? item = Translate(o, processes);
             if (item is null) continue;
@@ -159,6 +159,33 @@ public sealed class RemovalPlanner
             Rationale = $"{item.Rationale}; path contains run-specific segments ({template.Pattern})",
         };
     }
+
+    /// <summary>
+    /// True for the things Windows does on a program's behalf rather than letting it do.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A program does not install a service — it asks the service control manager to, and
+    /// the change is therefore attributed to <c>services.exe</c>. A scheduled task is
+    /// registered by the task scheduler service. Narrowing a plan to the subject's own
+    /// process tree therefore discards exactly the artifacts that matter most.
+    /// </para>
+    /// <para>
+    /// Measured: a recording of a program that installed a service with recovery actions
+    /// and registered a scheduled task produced a plan containing its files and its
+    /// startup entry and neither of the other two, while the analysis found all three
+    /// from the same recording. The plan and the report disagreed about what had been
+    /// installed.
+    /// </para>
+    /// <para>
+    /// Widening scope here is safe because these categories are the most heavily governed
+    /// by the safety policy: Windows' own services, its scheduled tasks, and the shared
+    /// surfaces around them are refused outright and never reach a plan.
+    /// </para>
+    /// </remarks>
+    private static bool IsDelegated(Observation o)
+        => o.Category is EventCategory.Service or EventCategory.ScheduledTask
+            or EventCategory.Autorun or EventCategory.Driver;
 
     private bool IsInScope(Observation o, Dictionary<ProcessKey, ProcessNode> processes)
     {

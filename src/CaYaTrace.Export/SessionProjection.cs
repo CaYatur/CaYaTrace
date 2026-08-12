@@ -62,9 +62,16 @@ public static class SessionProjection
 
         var inScope = new HashSet<ProcessKey>(nodes.Where(static p => p.InScope).Select(static p => p.Key));
 
+        // A system-wide recording has no subject, so nothing is marked in scope — and
+        // "narrow this to the subject" then narrows it to nothing. Measured: a 33,811
+        // event capture reported zero findings, because every attributed observation was
+        // outside a scope that did not exist. Scope only means something when there is
+        // something to be outside of.
+        bool scoped = inScope.Count > 0;
+
         bool Included(Observation o) =>
             request.Allows(o.Category)
-            && (request.IncludeOutOfScope || o.Actor == ProcessKey.None || inScope.Contains(o.Actor));
+            && (!scoped || request.IncludeOutOfScope || o.Actor == ProcessKey.None || inScope.Contains(o.Actor));
 
         // Findings are computed from the same rules the CLI uses, and deliberately
         // without a model: an exported report must be reproducible by anyone who opens
@@ -269,9 +276,14 @@ public static class SessionProjection
         // same mistake in the other direction.
         int unattributed = 0;
 
+        // Same reasoning as the finding filter: with no subject there is no "outside the
+        // subject's tree", and applying the rule anyway empties the network view of a
+        // system-wide capture entirely.
+        bool scoped = inScope.Count > 0;
+
         bool Owned(ProcessKey actor)
         {
-            if (request.IncludeOutOfScope) return true;
+            if (!scoped || request.IncludeOutOfScope) return true;
             if (actor == ProcessKey.None) { unattributed++; return false; }
             return inScope.Contains(actor);
         }

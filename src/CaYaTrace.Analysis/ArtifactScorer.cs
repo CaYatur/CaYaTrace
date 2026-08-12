@@ -255,6 +255,12 @@ public sealed class ArtifactScorer
     private bool IsBackgroundChurn(Observation o, string token)
     {
         if (o.Category != EventCategory.File) return false;
+
+        // The tool's own tracing session. Observing yourself observing is not evidence,
+        // and a report whose top file findings are the recorder's own buffers reads as
+        // though the subject did nothing — measured on a real capture.
+        if (token.Contains("EtwRTCaYaTrace", StringComparison.OrdinalIgnoreCase)) return true;
+
         if (!OsManagedChurn.Any(prefix => token.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
             return false;
 
@@ -367,6 +373,19 @@ public sealed class ArtifactScorer
             return Injection;
         }
 
+        // The same program, in two processes. Browsers, anything built on Chromium or
+        // Electron, and plenty of services split themselves across processes and create
+        // threads in their own siblings as a matter of design. Measured: three critical
+        // findings in one capture, all of them one instance of an editor starting a
+        // thread in another instance of the same editor.
+        if (injector.ImagePath is { Length: > 0 } injectorImage
+            && owner.ImagePath is { Length: > 0 } ownerImage
+            && injectorImage.Equals(ownerImage, StringComparison.OrdinalIgnoreCase))
+        {
+            reasons.Add("one instance of a program started a thread in another instance of itself");
+            return 0;
+        }
+
         bool injectorTrusted = IsMicrosoftSigned(injector);
         bool ownerTrusted = IsMicrosoftSigned(owner);
 
@@ -385,6 +404,17 @@ public sealed class ArtifactScorer
             // than a verdict.
             reasons.Add($"{injector.ImageName} started a thread inside {owner.ImageName}");
             return 25;
+        }
+
+        // A signature nobody checked is not the same as one that failed. Signature
+        // verification runs in the background and does not always finish before a
+        // session ends, so treating "unknown" as "untrusted" claims a certainty this
+        // does not have — and critical severity is exactly where that matters.
+        if (injector.Signature == SignatureState.Unchecked)
+        {
+            reasons.Add(
+                $"{injector.ImageName} creates a thread inside {owner.ImageName}; its signature was not verified");
+            return 55;
         }
 
         reasons.Add($"{injector.ImageName} creates a thread inside {owner.ImageName}, which is code injection");
@@ -415,17 +445,10 @@ public sealed class ArtifactScorer
     }
 
     /// <summary>
-    /// True when a binary carries a valid signature naming Microsoft.
+    /// The shared trust test; see <see cref="ProcessNode.IsMicrosoftSigned"/> for why it
+    /// is a signature check rather than a path check.
     /// </summary>
-    /// <remarks>
-    /// Both halves matter. A valid signature from someone else is a real signature and
-    /// says nothing about whether that code belongs inside another process; a Microsoft
-    /// name on an invalid, expired or untrusted-root signature is a claim, not a fact.
-    /// </remarks>
-    private static bool IsMicrosoftSigned(ProcessNode node)
-        => node.Signature == SignatureState.SignedValid
-           && node.Signer is { Length: > 0 } signer
-           && signer.Contains("Microsoft", StringComparison.OrdinalIgnoreCase);
+    private static bool IsMicrosoftSigned(ProcessNode node) => node.IsMicrosoftSigned();
 
     private static RiskLevel ToRisk(int score) => score switch
     {

@@ -251,6 +251,80 @@ public static class ServiceFailureActions
         => buffer[offset] | (buffer[offset + 1] << 8) | (buffer[offset + 2] << 16) | (buffer[offset + 3] << 24);
 }
 
+/// <summary>
+/// Reads what a scheduled task actually runs, out of its XML definition.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Necessary because a task says what it is called in three places and what it runs in
+/// exactly one. The registry holds the actions as a binary blob and the task path is only
+/// a name, so a task entry built from the registry alone reports
+/// <c>\SomeVendor\SomeTask</c> and never the executable — which is the only thing anybody
+/// wants to know about a task.
+/// </para>
+/// <para>
+/// Parsed with a reader rather than a document, and with entity resolution and DTD
+/// processing off. This XML came off a machine under investigation; treating it as a
+/// document to be resolved would let it reach the file system or the network.
+/// </para>
+/// </remarks>
+public static class TaskDefinition
+{
+    public static string? ReadCommand(string? xml)
+    {
+        if (string.IsNullOrWhiteSpace(xml)) return null;
+        if (!xml.Contains("<Task", StringComparison.OrdinalIgnoreCase)) return null;
+
+        string? command = null;
+        string? arguments = null;
+
+        try
+        {
+            using var reader = System.Xml.XmlReader.Create(new StringReader(xml), new System.Xml.XmlReaderSettings
+            {
+                DtdProcessing = System.Xml.DtdProcessing.Prohibit,
+                XmlResolver = null,
+                IgnoreComments = true,
+                IgnoreWhitespace = true,
+            });
+
+            // The reader is advanced by ReadElementContentAsString, which leaves it on
+            // the node *after* the element — so calling Read again would step over it.
+            // In a task definition Arguments follows Command immediately, which is
+            // exactly the element that got skipped.
+            bool advanced = true;
+            while (advanced ? reader.Read() : !reader.EOF)
+            {
+                advanced = true;
+
+                if (reader.NodeType != System.Xml.XmlNodeType.Element) continue;
+
+                if (reader.Name.Equals("Command", StringComparison.OrdinalIgnoreCase))
+                {
+                    command = reader.ReadElementContentAsString();
+                    advanced = false;
+                }
+                else if (reader.Name.Equals("Arguments", StringComparison.OrdinalIgnoreCase))
+                {
+                    arguments = reader.ReadElementContentAsString();
+                    advanced = false;
+                }
+
+                if (command is not null && arguments is not null) break;
+            }
+        }
+        catch (System.Xml.XmlException)
+        {
+            // Truncated or malformed. No answer is better than half of one.
+            return null;
+        }
+
+        if (command is not { Length: > 0 }) return null;
+
+        return arguments is { Length: > 0 } ? $"{command} {arguments}" : command;
+    }
+}
+
 /// <summary>How a Windows service is configured to start.</summary>
 public static class ServiceStartType
 {

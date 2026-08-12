@@ -88,8 +88,8 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | WinINet / WinHTTP uygulamalarından tam URL'ler | ✅ çalışıyor |
 | Oturum depolama, JSONL günlüğü, veri kalitesi raporu | ✅ çalışıyor |
 | Kaldırma planlayıcı, `.ctpkg` paketleri, kaldırma motoru | ✅ çalışıyor |
-| Komut satırı (`trace`, `report`, `remediate`) | ✅ çalışıyor |
-| Çalışma tezgâhı arayüzü (WebView2 + CaYaDev teması) | 🚧 devam ediyor |
+| Komut satırı (`trace`, `report`, `remediate`, `compare`, `explain`, `agent`) | ✅ çalışıyor |
+| Çalışma tezgâhı arayüzü (WebView2 + CaYaDev teması) | ✅ çalışıyor |
 | Süreçlere ilişkilendirilmiş Pktmon paket yakalama | ✅ çalışıyor |
 | Tam istek gövdeleri için araya giren proxy (isteğe bağlı) | ✅ çalışıyor |
 | Çoklu VM karşılaştırması (`compare`) ve ölçülmüş yol şablonlama | ✅ çalışıyor |
@@ -97,22 +97,60 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Gerekçeleri görünür risk puanlama | ✅ çalışıyor |
 | Model yeterlilik testli Ollama entegrasyonu | ✅ çalışıyor |
 | VirusTotal itibar sorgusu (hash ile, asla yükleme yapmaz) | ✅ çalışıyor |
-| Kategori seçimli HTML / CSV dışa aktarma | 📐 tasarlandı |
+| Kategori ve derinlik seçimli HTML / JSON / CSV / metin dışa aktarma | ✅ çalışıyor |
+| Sistem dilini izleyen Türkçe ve İngilizce arayüz | ✅ çalışıyor |
+
+## Çalışma tezgâhı
+
+Aşağıdakilerin tamamı tek pencereden yürütülür. Hiçbiri komut satırı gerektirmez.
+
+![Bulgular](docs/images/workbench-findings-tr.png)
+
+Bulgular başta gelir, çünkü bir analistin oturumu açarken sorduğu soru budur.
+Her bulgu kendisini üreten kuralları taşır; bir kayıt defteri değişikliği ise değerin
+öncesini ve sonrasını gösterir.
+
+<table>
+<tr>
+<td width="50%"><a href="docs/images/workbench-capture-tr.png"><img src="docs/images/workbench-capture-tr.png" alt="Kayıt"></a><br><b>Kayıt</b> — bir program başlatın, çalışan birine bağlanın ya da tüm makineyi izleyin.</td>
+<td width="50%"><a href="docs/images/workbench-tree.png"><img src="docs/images/workbench-tree.png" alt="Nedensel ağaç"></a><br><b>Nedensel ağaç</b> — süreç → alt süreç → modül → dosya → kayıt defteri → servis → bağlantı → istek.</td>
+</tr>
+<tr>
+<td><a href="docs/images/workbench-network.png"><img src="docs/images/workbench-network.png" alt="Ağ"></a><br><b>Ağ</b> — hangi süreç hangi URL'yi istedi, durum kodu ve bayt sayısıyla.</td>
+<td><a href="docs/images/workbench-remediate.png"><img src="docs/images/workbench-remediate.png" alt="Temizlik"></a><br><b>Temizlik</b> — hiçbir şeye dokunulmadan önce ne kaldırılacağını gözden geçirin.</td>
+</tr>
+<tr>
+<td><a href="docs/images/workbench-assistant.png"><img src="docs/images/workbench-assistant.png" alt="Asistan"></a><br><b>Asistan</b> — yerel bir model; güvenilmeden önce yanıtı belli sorularla ölçülür.</td>
+<td><a href="docs/images/workbench-fleet.png"><img src="docs/images/workbench-fleet.png" alt="Filo"></a><br><b>Filo</b> — birden çok makinede kayıt; ajan siz onaylayana kadar hiçbir şey yapmaz.</td>
+</tr>
+</table>
+
+Arayüz sistem dilini izler. Aynı oturum, İngilizce Windows'ta:
+
+![İngilizce arayüz](docs/images/workbench-findings.png)
+
 
 ## Hızlı başlangıç
 
 `CaYaTrace.exe` dosyasını [Releases](https://github.com/CaYatur/CaYaTrace/releases)
-bölümünden indirin. Taşınabilirdir — kurulum yok, servis yok, kendi klasörü dışına hiçbir
-şey yazmaz.
+bölümünden indirin. Taşınabilirdir — tek dosya, kurulum yok, servis yok; kendi klasörü ve
+sizin seçtiğiniz oturum dizini dışına hiçbir şey yazmaz.
+
+**Argümansız çalıştırın**, çalışma tezgâhı açılır. Kayıt sekmesinden bir program seçin,
+kaydı başlatın, programı bir kullanıcının kullanacağı gibi kullanın ve durdurun. Gerisi —
+bulgular, nedensel ağaç, ağ etkinliği, dışa aktarma, temizlik — aynı penceredededir.
+
+Betikleme ve sanal makine otomasyonu için her yetenek aynı zamanda bir komuttur:
 
 ```bash
 CaYaTrace trace --target "C:\Downloads\setup.exe" --duration 120
 ```
 
-Bulduklarını görüntüleyin:
+Bulduklarını ağaç olarak, JSON olarak, hesap tablosu olarak ya da e-postayla
+gönderebileceğiniz bir rapor olarak yazın:
 
 ```bash
-CaYaTrace report --session .\sessions
+CaYaTrace report --session .\sessions --format html --out rapor.html
 ```
 
 Kayıttan bir kaldırma paketi oluşturun:
@@ -131,11 +169,16 @@ Aynı programı iki VM'de kaydedip karşılaştırın — her ikisinde de tekrar
 gerçek davranışı, farklı olan yollar ise paketin taşıdığı *ölçülmüş* şablonlar olur:
 
 ```bash
-CaYaTrace compare .m-a .m-b --export-package Example.ctpkg
+CaYaTrace compare .\vm-a .\vm-b --export-package Example.ctpkg
 ```
 
-Arayüz için `CaYaTrace` komutunu argümansız çalıştırın; tüm seçenekler için
-`CaYaTrace help` kullanın.
+Bir oturumu sıralayın ve açıklayın, isterseniz yerel bir modelle:
+
+```bash
+CaYaTrace explain --session .\sessions --check-models
+```
+
+Tüm seçenekler için `CaYaTrace help` kullanın.
 
 > **Çekirdek izleme yönetici yetkisi ister.** Yetki olmadan da CaYaTrace öncesi/sonrası
 > sistem envanterlerini kaydeder ve neyi atladığını açıkça söyler — programın hiçbir şey
@@ -166,7 +209,11 @@ Kırpma (trimming) bilinçli olarak kapalıdır —
 ## Dil
 
 Arayüz Windows görüntü dilini izler: Türkçe sistemde Türkçe, diğer her yerde İngilizce.
-Geçersiz kılmak için `CAYATRACE_LANGUAGE=tr` veya `=en` ayarlayın.
+Tek çalıştırma için `--lang tr` ya da `--lang en`, bir kabuk için `CAYATRACE_LANGUAGE`,
+kalıcı olarak da çalışma tezgâhındaki EN/TR anahtarıyla değiştirebilirsiniz.
+
+Dışa aktarılan HTML rapor her iki dili ve kendi anahtarını taşır; böylece raporu alan kişi
+onu kaydeden kişinin dilinde değil, kendi dilinde okur.
 
 Ağaçtaki işlem adları (`FILE CREATE`, `REGISTRY SET`) her dilde İngilizce kalır; böylece
 raporlar diller arasında karşılaştırılabilir ve aranabilir olur.

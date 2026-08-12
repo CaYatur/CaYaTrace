@@ -85,8 +85,8 @@ This is an early release. What is real today versus designed is tracked honestly
 | Full URLs from WinINet / WinHTTP applications | ✅ working |
 | Session storage, JSONL journal, data-quality reporting | ✅ working |
 | Removal planner, `.ctpkg` packages, remediation runner | ✅ working |
-| CLI (`trace`, `report`, `remediate`) | ✅ working |
-| Workbench UI (WebView2 + CaYaDev theme) | 🚧 in progress |
+| CLI (`trace`, `report`, `remediate`, `compare`, `explain`, `agent`) | ✅ working |
+| Workbench UI (WebView2 + CaYaDev theme) | ✅ working |
 | Packet capture via Pktmon, correlated to processes | ✅ working |
 | Intercepting proxy for full request bodies (opt-in) | ✅ working |
 | Multi-VM comparison (`compare`) with measured path templating | ✅ working |
@@ -94,21 +94,59 @@ This is an early release. What is real today versus designed is tracked honestly
 | Risk scoring with visible reasons | ✅ working |
 | Ollama integration with model capability testing | ✅ working |
 | VirusTotal reputation (hash lookup, never uploads) | ✅ working |
-| HTML / CSV export with category selection | 📐 designed |
+| HTML / JSON / CSV / text export with category and depth selection | ✅ working |
+| Turkish and English interface, following the system language | ✅ working |
+
+## The workbench
+
+Everything below is driven from one window. Nothing here needs the command line.
+
+![Findings](docs/images/workbench-findings.png)
+
+Findings lead, because they answer the question an analyst opens a session with.
+Every one carries the rules that produced it, and a registry change shows what the
+value was before and what it became.
+
+<table>
+<tr>
+<td width="50%"><a href="docs/images/workbench-capture.png"><img src="docs/images/workbench-capture.png" alt="Capture"></a><br><b>Capture</b> — launch a program, attach to a running one, or watch the whole machine.</td>
+<td width="50%"><a href="docs/images/workbench-tree.png"><img src="docs/images/workbench-tree.png" alt="Causal tree"></a><br><b>Causal tree</b> — process → child → module → file → registry → service → connection → request.</td>
+</tr>
+<tr>
+<td><a href="docs/images/workbench-network.png"><img src="docs/images/workbench-network.png" alt="Network"></a><br><b>Network</b> — which process asked for which URL, with status and bytes.</td>
+<td><a href="docs/images/workbench-remediate.png"><img src="docs/images/workbench-remediate.png" alt="Remediation"></a><br><b>Remediation</b> — review what would be removed before anything is touched.</td>
+</tr>
+<tr>
+<td><a href="docs/images/workbench-assistant.png"><img src="docs/images/workbench-assistant.png" alt="Assistant"></a><br><b>Assistant</b> — a local model, measured against known answers before it is believed.</td>
+<td><a href="docs/images/workbench-fleet.png"><img src="docs/images/workbench-fleet.png" alt="Fleet"></a><br><b>Fleet</b> — record on several machines; an agent is inert until you approve it.</td>
+</tr>
+</table>
+
+The interface follows the system language. Same session, Turkish Windows:
+
+![Turkish interface](docs/images/workbench-findings-tr.png)
+
 
 ## Quick start
 
 Download `CaYaTrace.exe` from [Releases](https://github.com/CaYatur/CaYaTrace/releases). It is
-portable — no installer, no service, nothing written outside its own folder.
+portable — one file, no installer, no service, nothing written outside its own folder and the
+session directory you choose.
+
+**Run it with no arguments** and the workbench opens. Choose a program on the Capture tab,
+press record, use the program the way a user would, then press stop. Everything else —
+findings, the causal tree, network activity, export, removal — is in that window.
+
+For scripting and sandbox automation, every capability is also a verb:
 
 ```bash
 CaYaTrace trace --target "C:\Downloads\setup.exe" --duration 120
 ```
 
-Then render what it found:
+Render what it found, as a tree, as JSON, as a spreadsheet, or as a report you can email:
 
 ```bash
-CaYaTrace report --session .\sessions
+CaYaTrace report --session .\sessions --format html --out report.html
 ```
 
 Build a removal package from the recording:
@@ -127,10 +165,16 @@ Record the same program on two VMs, then compare — the parts that recur are it
 behaviour, and the paths that differ become *measured* patterns the package carries:
 
 ```bash
-CaYaTrace compare .m-a .m-b --export-package Example.ctpkg
+CaYaTrace compare .\vm-a .\vm-b --export-package Example.ctpkg
 ```
 
-Run `CaYaTrace` with no arguments for the workbench UI, or `CaYaTrace help` for every option.
+Rank and explain a session, optionally with a local model:
+
+```bash
+CaYaTrace explain --session .\sessions --check-models
+```
+
+Run `CaYaTrace help` for every option.
 
 > **Kernel tracing needs an elevated prompt.** Without it CaYaTrace still records
 > before/after system inventories, and tells you clearly what it skipped rather than
@@ -160,7 +204,11 @@ Trimming is disabled deliberately —
 ## Language
 
 The interface follows the Windows display language: Turkish on a Turkish system, English
-everywhere else. Set `CAYATRACE_LANGUAGE=en` or `=tr` to override.
+everywhere else. Override it for one run with `--lang en` or `--lang tr`, for a shell with
+`CAYATRACE_LANGUAGE`, or permanently with the EN/TR switch in the workbench.
+
+An exported HTML report carries both languages and its own switch, so a colleague reads it in
+theirs rather than in the language of whoever recorded it.
 
 Operation names in the tree (`FILE CREATE`, `REGISTRY SET`) stay in English in every
 language, so reports remain diffable and searchable across locales.

@@ -51,17 +51,25 @@ public static class Strings
     public static bool Supports(string? tag) =>
         tag is not null && Catalogue.Value.RootElement.TryGetProperty(Normalize(tag), out _);
 
+    /// <summary>Environment override, for scripted and CI use.</summary>
+    public const string EnvironmentVariable = "CAYATRACE_LANGUAGE";
+
     /// <summary>
     /// Picks the language for this run.
     /// </summary>
     /// <remarks>
-    /// Order matters and is deliberate: an explicit switch beats a remembered
-    /// preference, which beats the system language, which beats English. Anything a
-    /// person typed most recently wins over anything inferred about them.
+    /// Order matters and is deliberate: an explicit switch beats the environment, which
+    /// beats a remembered preference, which beats the system language, which beats
+    /// English. Anything a person stated for this run wins over anything inferred about
+    /// them, and anything they stated once wins over the operating system's guess.
     /// </remarks>
     public static string Resolve(string? explicitTag, string? remembered)
     {
         if (Supports(explicitTag)) return Normalize(explicitTag!);
+
+        string? fromEnvironment = Environment.GetEnvironmentVariable(EnvironmentVariable);
+        if (Supports(fromEnvironment)) return Normalize(fromEnvironment!);
+
         if (Supports(remembered)) return Normalize(remembered!);
 
         string system = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;

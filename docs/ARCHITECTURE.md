@@ -249,7 +249,7 @@ Build flags that matter:
 
 ---
 
-## 10. Fleet (designed, not yet implemented)
+## 10. Fleet
 
 Multi-VM comparison exists because the same sample writes different filenames and partially
 different paths on each machine. That needs **path templating**, not a diff: tokenize into
@@ -278,7 +278,9 @@ Transport requirements, deliberately not stubbed with something weaker in the me
   the machine they run on, and a host able to trigger them remotely would turn a paired agent
   into a remote administration channel.
 
-A half-built remote-collection channel on an analysis network is a liability, not a feature.
+A half-built remote-collection channel on an analysis network is a liability, not a feature —
+which is why the transport was written and tested before the host and agent were wired to it,
+rather than the other way round.
 
 ---
 
@@ -292,3 +294,29 @@ the CaYaDev visual language is already expressed in CSS.
 Design tokens are taken from `cayadev.com` directly — `#dc2626` primary, `#111826` background,
 `#182438` cards, Inter for text and Consolas for the terminal surfaces — so the tool looks
 like the rest of the product line rather than approximating it.
+
+### The boundary the page sits behind
+
+The page is a **view**. It receives already-projected data and sends back enumerated intents;
+it never opens a session database and never issues a query of its own. That is what makes the
+exported report possible — the same markup renders from inlined data with no engine behind it
+— and it is also where the security line falls.
+
+A session is full of strings an observed program chose: file paths, URLs, registry values. If
+the page could name a path to act on, every one of those strings would be a step away from
+being a path the tool deletes. So it cannot. The page can choose *which items of a plan* to
+remove, and the items are re-resolved from indices into the plan the host process built. It
+can ask to open a session folder; the host runs the file dialog. Navigation away from the
+local document is cancelled outright, because a URL in a recording is attacker-controlled
+content, and following one would be a way for a captured session to reach the network.
+
+Consent for HTTPS interception is asked by the host and answered by typing a word, and the
+capture runs off the UI thread specifically so that dialog can be drawn while the collector
+blocks waiting for the answer.
+
+The catalogue of interface strings is injected into the page as inert JSON in a script
+element of type `application/json`, and the session payload through an explicit placeholder.
+An earlier version located the insertion point by searching for the page's own `<script>` tag
+including its newline, which meant a checkout with CRLF line endings inserted the payload
+*inside* that element — a nested tag and a report that rendered its own source as text.
+Placeholders do not have line endings.

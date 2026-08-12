@@ -42,6 +42,16 @@ public sealed class SessionOptions
     /// <summary>Capture packets with the Windows packet monitor. Off by default.</summary>
     public bool CapturePackets { get; init; }
 
+    /// <summary>
+    /// Consent callback for HTTPS interception. Interception is impossible without one:
+    /// there is deliberately no boolean that turns it on, because something has to
+    /// affirmatively answer for the trusted root it installs.
+    /// </summary>
+    public Func<CaYaTrace.Collectors.Proxy.InterceptionConsentRequest, bool>? InterceptionConsent { get; init; }
+
+    public CaYaTrace.Collectors.Proxy.ProxyCollectorOptions ProxyOptions { get; init; }
+        = CaYaTrace.Collectors.Proxy.ProxyCollectorOptions.Default;
+
     public CaYaTrace.Collectors.Network.PktmonOptions Pktmon { get; init; }
         = CaYaTrace.Collectors.Network.PktmonOptions.Default;
 
@@ -185,6 +195,9 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             // bytes on the wire to answer their question.
             if (_options.CapturePackets)
                 _collectors.Add(new CaYaTrace.Collectors.Network.PktmonCollector(_options.Pktmon));
+
+            if (_options.InterceptionConsent is { } consent)
+                _collectors.Add(new Proxy.ProxyCollector(consent, _options.ProxyOptions));
         }
 
         foreach (ICollector collector in _collectors)

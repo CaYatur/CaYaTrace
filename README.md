@@ -88,7 +88,7 @@ This is an early release. What is real today versus designed is tracked honestly
 | CLI (`trace`, `report`, `remediate`) | ✅ working |
 | Workbench UI (WebView2 + CaYaDev theme) | 🚧 in progress |
 | Packet capture via Pktmon, correlated to processes | ✅ working |
-| Intercepting proxy for full request bodies (opt-in) | 📐 designed |
+| Intercepting proxy for full request bodies (opt-in) | ✅ working |
 | Multi-VM comparison (`compare`) with measured path templating | ✅ working |
 | Risk scoring with visible reasons | ✅ working |
 | Ollama integration with model capability testing | ✅ working |

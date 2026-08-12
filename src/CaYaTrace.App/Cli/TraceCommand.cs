@@ -46,6 +46,10 @@ public static class TraceCommand
             CaptureSnapshots = !cmd.Flag("no-snapshots"),
             DropOutOfScope = cmd.Flag("scoped-only"),
             CapturePackets = cmd.Flag("packets"),
+
+            // A callback, not a flag. --intercept-https alone is not consent; it only
+            // makes the question get asked.
+            InterceptionConsent = ResolveInterceptionConsent(cmd),
             Pktmon = new Collectors.Network.PktmonOptions
             {
                 MaxFileSizeMB = cmd.Int("packet-cap-mb", 512),
@@ -58,6 +62,62 @@ public static class TraceCommand
         };
 
         return RunAsync(options, cmd).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Decides how consent for HTTPS interception will be obtained, if at all.
+    /// </summary>
+    /// <remarks>
+    /// Two paths, both affirmative. Interactively the operator types a word after
+    /// reading what will change. For sandbox automation — where a pipeline runs a
+    /// sample in a disposable VM and no human is present at the moment of the run —
+    /// <c>--intercept-https-consent</c> stands in, and its name is deliberately long
+    /// enough that nobody types it by accident or without meaning it.
+    /// </remarks>
+    private static Func<Collectors.Proxy.InterceptionConsentRequest, bool>? ResolveInterceptionConsent(CommandLine cmd)
+    {
+        if (cmd.Flag("intercept-https-consent"))
+        {
+            return request =>
+            {
+                Console.Error.WriteLine(request.Describe());
+                Console.Error.WriteLine();
+                Console.Error.WriteLine("Consent was given on the command line with --intercept-https-consent.");
+                return true;
+            };
+        }
+
+        return cmd.Flag("intercept-https") ? AskForInterceptionConsent : null;
+    }
+
+    /// <summary>
+    /// Asks the operator to confirm HTTPS interception.
+    /// </summary>
+    /// <remarks>
+    /// Requires typing a word rather than pressing a key. This installs a trusted root
+    /// certificate authority, and a prompt that a reflexive Enter clears is not consent
+    /// to that. Declining is the default on anything unexpected, including a
+    /// non-interactive console where nobody could have read the question.
+    /// </remarks>
+    private static bool AskForInterceptionConsent(Collectors.Proxy.InterceptionConsentRequest request)
+    {
+        Console.Error.WriteLine();
+        Console.Error.WriteLine(request.Describe());
+        Console.Error.WriteLine();
+
+        if (Console.IsInputRedirected)
+        {
+            Console.Error.WriteLine(
+                "Input is not interactive, so consent cannot be given. HTTPS interception is off.");
+            return false;
+        }
+
+        Console.Error.Write("Type INTERCEPT to continue, or anything else to decline: ");
+        string? answer = Console.ReadLine();
+
+        bool agreed = string.Equals(answer?.Trim(), "INTERCEPT", StringComparison.Ordinal);
+        if (!agreed) Console.Error.WriteLine("Declined. Continuing without HTTPS interception.");
+        return agreed;
     }
 
     private static async Task<int> RunAsync(SessionOptions options, CommandLine cmd)

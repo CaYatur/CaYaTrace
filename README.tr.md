@@ -91,7 +91,7 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Komut satırı (`trace`, `report`, `remediate`) | ✅ çalışıyor |
 | Çalışma tezgâhı arayüzü (WebView2 + CaYaDev teması) | 🚧 devam ediyor |
 | Süreçlere ilişkilendirilmiş Pktmon paket yakalama | ✅ çalışıyor |
-| Tam istek gövdeleri için araya giren proxy (isteğe bağlı) | 📐 tasarlandı |
+| Tam istek gövdeleri için araya giren proxy (isteğe bağlı) | ✅ çalışıyor |
 | Çoklu VM karşılaştırması (`compare`) ve ölçülmüş yol şablonlama | ✅ çalışıyor |
 | Gerekçeleri görünür risk puanlama | ✅ çalışıyor |
 | Model yeterlilik testli Ollama entegrasyonu | ✅ çalışıyor |

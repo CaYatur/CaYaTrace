@@ -130,6 +130,15 @@ public sealed class CommandLine
                                      converted to pcapng for Wireshark and correlated
                                      back to processes by 5-tuple
               --packet-cap-mb <n>    Circular capture size cap (default 512)
+              --intercept-https      Ask to intercept HTTPS. Installs a temporary
+                                     certificate authority into the machine's trusted
+                                     roots for the length of the session, so request and
+                                     response bodies become readable. Asks first, and
+                                     removes it afterwards. Use a disposable VM.
+              --intercept-https-consent
+                                     Consent without the interactive prompt, for sandbox
+                                     automation. Same effect, same cleanup; you are
+                                     agreeing on the operator's behalf.
 
             REPORT
               --session <dir|file>   Session to render

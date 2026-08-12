@@ -264,6 +264,18 @@
               <option value="detailed" data-i18n="chat.detailed"></option>
             </select>
             <button class="btn btn-primary" id="btnChatSend" data-i18n="chat.ask" type="button"></button>
+            <button class="btn btn-ghost" id="btnChatStop" data-i18n="chat.stop" type="button" hidden></button>
+          </div>
+
+          <!--
+            The model belongs next to the question, not on another card. Answering with no
+            model at all is the first option because it always works and is always correct;
+            a model only changes the wording.
+          -->
+          <div class="row tight wrap center" style="margin-top:8px">
+            <span class="hint" style="margin:0" data-i18n="chat.model"></span>
+            <select id="chatModel" style="max-width:280px"></select>
+            <span class="hint" style="margin:0" id="chatModelNote"></span>
           </div>
 
           <div class="row tight wrap" style="margin-top:10px">
@@ -327,6 +339,7 @@
             <button class="btn btn-ghost" id="btnLoadPackage" data-i18n="remediate.open_package" type="button"></button>
           </div>
           <div class="hint" data-i18n="remediate.package_hint" style="margin-top:8px"></div>
+          <div class="hint" id="planNoSession" data-i18n="remediate.no_session" hidden></div>
         </div>
 
         <div id="remediationProgress"></div>
@@ -666,8 +679,15 @@ function renderNav() {
   });
 }
 
+/*
+ * Views that have nothing to show without a session.
+ *
+ * Remediate is deliberately not one of them. Carrying a package to a machine that has
+ * never recorded anything is the whole reason packages exist, and disabling the view
+ * until a session is loaded made that workflow unreachable from the window.
+ */
 function needsSession(id) {
-  return ['overview', 'findings', 'persistence', 'timeline', 'tree', 'network', 'remediate'].includes(id);
+  return ['overview', 'findings', 'persistence', 'timeline', 'tree', 'network'].includes(id);
 }
 
 function navCount(id) {
@@ -1283,7 +1303,15 @@ function renderNetwork() {
         tr.appendChild(cell(r.process || t('network.unattributed'), 'nowrap'));
         tr.appendChild(cell(r.protocol, 'nowrap'));
         tr.appendChild(cell(r.remote, 'mono nowrap'));
-        tr.appendChild(cell(r.remoteHost || '', 'mono'));
+
+        // For a conversation that never leaves this machine, the useful thing in the
+        // host column is not a hostname — there isn't one — but the program at the other
+        // end, which is what "it connected to 127.0.0.1:61274" was failing to say.
+        const host = r.onThisMachine
+          ? (r.peerProcess ? '→ ' + r.peerProcess : t('network.peer_unknown'))
+          : (r.remoteHost || '');
+        tr.appendChild(cell(host, r.onThisMachine ? 'nowrap' : 'mono'));
+
         tr.appendChild(cell(formatBytes(r.sent), 'num'));
         tr.appendChild(cell(formatBytes(r.received), 'num'));
         return tr;
@@ -1749,6 +1777,17 @@ function renderPlanOptions() {
       if (d && PLAN_OPTIONS[i].hint) d.textContent = t(PLAN_OPTIONS[i].hint);
     });
   }
+
+  // Building a plan reads a recording; opening a package does not. With no session the
+  // options and the build button are inert and the package path stays available, which
+  // is the case a package exists for: a machine that has never recorded anything.
+  const hasSession = !!state.session;
+  const build = document.getElementById('btnBuildPlan');
+  if (build) build.disabled = !hasSession;
+  host.querySelectorAll('input[type=checkbox]').forEach(b => { b.disabled = !hasSession; });
+
+  const note = document.getElementById('planNoSession');
+  if (note) note.hidden = hasSession;
 }
 
 function renderPlan() {
@@ -2300,36 +2339,116 @@ function openExportDialog() {
   });
 }
 
-/* An exported report can still produce a JSON or CSV of what it contains, without an
-   engine: the data it needs is already in the page. */
+/*
+ * An exported report can re-export itself, without an engine behind it.
+ *
+ * Every format offered here is one it can actually produce. It used to fall through to
+ * JSON for anything that was not CSV, so choosing HTML or Text silently wrote a .json —
+ * an export that quietly ignores what was asked for is worse than one that refuses.
+ */
 function exportLocally(format) {
   const data = window.__CAYATRACE_DATA__ || {};
   let text, mime, ext;
 
   if (format === 'csv') {
-    const cell = v => {
-      let s = String(v ?? '');
-      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
-      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-    };
-    const rows = [['risk', 'score', 'category', 'action', 'target', 'target2', 'old', 'new', 'reasons']];
-    (data.findings || []).forEach(f => rows.push([
-      f.risk, f.score, f.category, f.action, f.target, f.target2, f.oldValue, f.newValue,
-      (f.reasons || []).join(' | '),
-    ]));
-    text = rows.map(r => r.map(cell).join(',')).join('\r\n');
-    mime = 'text/csv'; ext = 'csv';
+    text = toCsv(data); mime = 'text/csv'; ext = 'csv';
+  } else if (format === 'tree') {
+    text = toText(data); mime = 'text/plain'; ext = 'txt';
+  } else if (format === 'html') {
+    // A copy of this very document, which is already self-contained: the stylesheet is
+    // inlined, the catalogue is inlined, and the session is inlined.
+    text = '<!doctype html>\n' + document.documentElement.outerHTML;
+    mime = 'text/html'; ext = 'html';
   } else {
-    text = JSON.stringify(data, null, 2);
-    mime = 'application/json'; ext = 'json';
+    text = JSON.stringify(data, null, 2); mime = 'application/json'; ext = 'json';
   }
 
-  const blob = new Blob(["﻿", text], { type: mime + ';charset=utf-8' });
+  download(text, mime, ext, data);
+}
+
+function download(text, mime, ext, data) {
+  // The byte-order mark keeps Excel and Notepad from guessing the encoding wrong on a
+  // report full of non-ASCII paths. HTML carries its own charset and does not need it.
+  const parts = ext === 'html' ? [text] : ["﻿", text];
+
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = ((data.session && (data.session.Name || data.session.name)) || 'cayatrace') + '.' + ext;
+  a.href = URL.createObjectURL(new Blob(parts, { type: mime + ';charset=utf-8' }));
+  a.download = baseName(data) + '.' + ext;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+/*
+ * A file name for the report, without the subject's own extension.
+ *
+ * A session recorded from "Setup.exe" is named after it, so appending the format left
+ * "Setup.exe.html" — and Windows hides the last known extension, so the save dialog
+ * showed "Setup.exe" and the operator reasonably concluded it was writing an executable.
+ */
+function baseName(data) {
+  const name = (data.session && (data.session.Name || data.session.name)) || 'cayatrace';
+  return name.replace(/\.(exe|dll|msi|com|scr|bat|cmd|ps1)$/i, '');
+}
+
+function toCsv(data) {
+  const cell = v => {
+    let s = String(v ?? '');
+    // A leading formula character turns a path into something a spreadsheet executes.
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+
+  const rows = [['risk', 'score', 'category', 'action', 'target', 'target2', 'old', 'new', 'reasons']];
+  (data.findings || []).forEach(f => rows.push([
+    f.risk, f.score, f.category, f.action, f.target, f.target2, f.oldValue, f.newValue,
+    (f.reasons || []).join(' | '),
+  ]));
+
+  return rows.map(r => r.map(cell).join(',')).join('\r\n');
+}
+
+/* The report as plain text, for pasting into a ticket or a mail. */
+function toText(data) {
+  const out = [];
+  const session = data.session || {};
+  const machine = p(session, 'Machine') || {};
+
+  out.push('CaYaTrace — ' + (p(session, 'Name') || ''));
+  out.push('  ' + (p(machine, 'MachineName') || '') + '  ' + (p(machine, 'OsBuild') || ''));
+  out.push('  ' + formatDateTime(p(session, 'StartedAt')));
+  out.push('');
+
+  const persistence = data.persistence || [];
+  out.push(t('persistence.title').toUpperCase() + '  (' + persistence.length + ')');
+  if (!persistence.length) out.push('  ' + t('persistence.none'));
+  persistence.forEach(r => {
+    out.push('  [' + r.risk + '] ' + r.kind + '  ' + r.identity);
+    if (r.command) out.push('      → ' + r.command);
+    out.push('      ' + r.location);
+    (r.traits || []).forEach(x => out.push('      · ' + x));
+  });
+  out.push('');
+
+  const findings = data.findings || [];
+  out.push(t('nav.findings').toUpperCase() + '  (' + findings.length + ')');
+  findings.forEach(f => {
+    out.push('  [' + f.risk + '] ' + f.action + '  ' + f.target + (f.target2 ? '::' + f.target2 : ''));
+    (f.reasons || []).forEach(x => out.push('      · ' + x));
+  });
+  out.push('');
+
+  const net = data.network || {};
+  const conversations = net.conversations || [];
+  if (conversations.length) {
+    out.push(t('network.tab_conversations').toUpperCase() + '  (' + conversations.length + ')');
+    conversations.forEach(c => {
+      out.push('  ' + (c.scope || '') + '  ' + (c.protocol || '') + '  ' + c.peer
+               + '  ' + (c.process || '') + '  ' + formatBytes(c.bytes || 0));
+      if (c.summary) out.push('      ' + c.summary);
+    });
+  }
+
+  return out.join('\r\n');
 }
 
 /* ================================================================ load */
@@ -2416,6 +2535,33 @@ function loopbackFlowCount() {
     String(f.remote || '').startsWith('127.') || String(f.remote || '').startsWith('[::1]')).length;
 }
 
+/*
+ * Shows conversation contents.
+ *
+ * The text is set on a pre-formatted element and never inserted as markup: this came off
+ * the wire and is under nobody's control. It goes in a dialog rather than inline so a
+ * megabyte of protocol does not displace the list behind it.
+ */
+function showBody(content, bytes, present, truncated, isHex) {
+  if (!present) { toast(t('network.body_not_exported')); return; }
+
+  const pre = el('pre', 'body-view');
+  pre.textContent = content || '';
+
+  const extra = el('div');
+  extra.appendChild(wrapScroll(pre));
+  if (truncated || (content || '').length >= 4096) {
+    extra.appendChild(el('div', 'hint', t('network.body_truncated')));
+  }
+
+  showModal({
+    title: t('network.body_title', formatBytes(bytes)),
+    body: isHex || /^[0-9a-f]{8}  /.test(content || '') ? t('network.body_binary') : '',
+    extra,
+    actions: [{ label: t('common.close') }],
+  });
+}
+
 function renderConversation(r) {
   const box = el('div', 'convo');
 
@@ -2428,6 +2574,7 @@ function renderConversation(r) {
 
   const facts = [];
   facts.push(r.peer);
+  if (r.peerProcess) facts.push('→ ' + r.peerProcess);
   if (r.localPort) facts.push(t('network.local_port') + ' ' + r.localPort);
   facts.push(formatBytes(r.bytes || 0));
   box.appendChild(el('div', 'convo-facts', facts.join(' · ')));
@@ -2435,16 +2582,33 @@ function renderConversation(r) {
   if (r.summary) box.appendChild(el('code', 'wrap-any convo-summary', r.summary));
   if (r.truncated) box.appendChild(el('div', 'hint', t('network.body_truncated')));
 
+  // A conversation between two processes on this machine is reported completely except
+  // for what was said, and saying so is better than a reader assuming nothing was.
+  if (r.contentsUnavailable) box.appendChild(el('div', 'hint', t('network.loopback_no_contents')));
+
   const actions = el('div', 'row tight wrap');
   actions.style.marginTop = '8px';
 
-  [['sentBody', 'sentBytes', 'network.body_sent'], ['receivedBody', 'receivedBytes', 'network.body_received']]
-    .forEach(([hashField, sizeField, key]) => {
-      if (!r[hashField]) return;
+  [['sentBody', 'sentBytes', 'sentPreview', 'network.body_sent'],
+   ['receivedBody', 'receivedBytes', 'receivedPreview', 'network.body_received']]
+    .forEach(([hashField, sizeField, previewField, key]) => {
+      if (!r[hashField] && !r[previewField]) return;
+
       const b = el('button', 'btn btn-ghost btn-small',
         t(key) + ' · ' + formatBytes(r[sizeField] || 0));
       b.type = 'button';
-      b.onclick = () => bridge.send('readBody', { hash: r[hashField] });
+
+      // The live workbench fetches the whole body from the session; an exported report
+      // has nothing to fetch from and shows the preview that travelled with it.
+      b.onclick = bridge.live && r[hashField]
+        ? () => bridge.send('readBody', { hash: r[hashField] })
+        : () => showBody(r[previewField], r[sizeField] || 0, !!r[previewField]);
+
+      if (!bridge.live && !r[previewField]) {
+        b.disabled = true;
+        b.title = t('network.body_not_exported');
+      }
+
       actions.appendChild(b);
     });
 
@@ -2714,6 +2878,54 @@ function renderChat() {
       chips.appendChild(b);
     });
   }
+
+  // Ask becomes Stop while one is in flight. A local model can take the better part of a
+  // minute, and waiting on one with no way out is the same as a hang from where the
+  // operator sits.
+  const send = document.getElementById('btnChatSend');
+  const stop = document.getElementById('btnChatStop');
+  if (send) send.hidden = state.chat.busy;
+  if (stop) stop.hidden = !state.chat.busy;
+
+  renderChatModels();
+}
+
+/*
+ * The models this machine has, with "no model" first.
+ *
+ * First because it is the honest default: every answer is computed from the session and
+ * works without one. A model changes the wording, and on a small local model it can
+ * change it for the worse — so choosing none is a real choice, not a fallback.
+ */
+function renderChatModels() {
+  const select = document.getElementById('chatModel');
+  if (!select) return;
+
+  const models = (state.ai.status && state.ai.status.models) || [];
+  const signature = models.map(m => m.name || m).join('|');
+  if (select.dataset.signature === signature) return;
+
+  const previous = select.value;
+  select.dataset.signature = signature;
+  select.innerHTML = '';
+
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = t('chat.no_model');
+  select.appendChild(none);
+
+  models.forEach(m => {
+    const name = m.name || m;
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = m.parameterSize ? `${name} · ${m.parameterSize}` : name;
+    select.appendChild(option);
+  });
+
+  if (previous && [...select.options].some(o => o.value === previous)) select.value = previous;
+
+  const note = document.getElementById('chatModelNote');
+  if (note) note.textContent = models.length ? '' : t('chat.no_models_found');
 }
 
 function appendEvidence(host, evidence) {
@@ -2733,7 +2945,10 @@ function askChat(question) {
   bridge.send('ask', {
     question,
     detail: (document.getElementById('chatDetail') || {}).value || 'brief',
-    model: (document.getElementById('aiModel') || {}).value || '',
+
+    // The chat's own picker, not the analysis card's. An empty value means answer from
+    // the session alone, which is a choice the operator can make deliberately.
+    model: (document.getElementById('chatModel') || {}).value || '',
     endpoint: (document.getElementById('ollamaEndpoint') || {}).value || '',
   });
 }
@@ -3007,6 +3222,7 @@ function wire() {
   });
 
   document.getElementById('btnChatSummary').onclick = () => askChat(t('chat.q.summary'));
+  document.getElementById('btnChatStop').onclick = () => bridge.send('askCancel', {});
 
   document.getElementById('timelineSearch').addEventListener('input', e => {
     state.timelineQuery = e.target.value;
@@ -3089,24 +3305,8 @@ function wireBridge() {
   bridge.on('plan', payload => { state.plan = payload; renderPlan(); });
   bridge.on('fleet', payload => { state.fleet = payload; renderFleet(); });
 
-  bridge.on('body', payload => {
-    // Content that came off the wire. It reaches the page as text set on a pre-formatted
-    // element, never as markup, and it is shown in a dialog rather than inline so a
-    // megabyte of protocol does not displace the conversation list behind it.
-    const pre = el('pre', 'body-view');
-    pre.textContent = payload.content || '';
-
-    const extra = el('div');
-    extra.appendChild(wrapScroll(pre));
-    if (payload.truncated) extra.appendChild(el('div', 'hint', t('network.body_truncated')));
-
-    showModal({
-      title: t('network.body_title', formatBytes(payload.bytes || 0)),
-      body: payload.kind === 'hex' ? t('network.body_binary') : '',
-      extra,
-      actions: [{ label: t('common.close') }],
-    });
-  });
+  bridge.on('body', payload =>
+    showBody(payload.content, payload.bytes || 0, true, payload.truncated, payload.kind === 'hex'));
 
   bridge.on('fleetAgent', payload => {
     state.agent = Object.assign(state.agent, payload);

@@ -543,8 +543,26 @@ public sealed class KernelCollector : ICollector
         {
             kernel.FileIORead += data =>
             {
-                string path = ctx.Files.Resolve(data.FileObject, data.FileKey, data.FileName);
-                if (path.Length == 0) return;
+                // Same reasoning as RegistryOpen: park it rather than discard it, so a
+                // name that only arrives with the rundown still finds its operation.
+                if (!ctx.Files.TryResolve(data.FileObject, data.FileKey, data.FileName, out string path))
+                {
+                    Defer(ctx, new Observation
+                    {
+                        Timestamp = data.TimeStamp,
+                        Category = EventCategory.File,
+                        Action = EventAction.FileRead,
+                        Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
+                        ThreadId = (uint)data.ThreadID,
+                        Bytes = data.IoSize,
+                        Source = EvidenceSource.KernelEtw,
+                        Confidence = AttributionConfidence.Direct,
+                        Status = StatusOf(0),
+                    }, data.FileObject, data.FileKey, null, isRegistry: false);
+                    return;
+                }
+
+                ctx.Files.NoteReadResolved();
 
                 ctx.Emit(new Observation
                 {
@@ -720,23 +738,12 @@ public sealed class KernelCollector : ICollector
 
         if (_options.CollectReads)
         {
-            kernel.RegistryOpen += data =>
-            {
-                string path = ctx.Registry.Resolve(data.KeyHandle, data.KeyName);
-                if (path.Length == 0) return;
-                ctx.Emit(new Observation
-                {
-                    Timestamp = data.TimeStamp,
-                    Category = EventCategory.Registry,
-                    Action = EventAction.KeyOpen,
-                    Actor = ResolveActor(ctx, data.ProcessID, data.TimeStamp),
-                    ThreadId = (uint)data.ThreadID,
-                    Target = path,
-                    Source = EvidenceSource.KernelEtw,
-                    Confidence = AttributionConfidence.Direct,
-                    Status = StatusOf(data.Status),
-                });
-            };
+            // Parked like everything else when the key has no name yet, rather than
+            // resolved-or-dropped on the spot. Measured: a session recording reads
+            // reported 35% of registry operations resolved, and almost all of the
+            // shortfall was reads being discarded at this line — evidence thrown away,
+            // and a data-quality figure that alarmed the operator about the wrong thing.
+            kernel.RegistryOpen += data => EmitRegistry(ctx, data, EventAction.KeyOpen);
         }
     }
 
@@ -763,7 +770,12 @@ public sealed class KernelCollector : ICollector
             return;
         }
 
-        ctx.Registry.NoteResolved();
+        // A read that resolved and a change that resolved are counted apart, so the
+        // session's quality figure answers "is the evidence complete" rather than
+        // "how much of everything the machine did could be named".
+        if (action.IsPersistentChange()) ctx.Registry.NoteResolved();
+        else ctx.Registry.NoteReadResolved();
+
         ctx.Emit(template with { Target = path });
     }
 
@@ -802,21 +814,61 @@ public sealed class KernelCollector : ICollector
     private readonly List<Deferred> _deferred = new();
 
     /// <summary>
-    /// Roughly 40 MB at the observed average size. Generous, because the alternative is
-    /// discarding evidence, but finite.
+    /// How many operations may wait for the end-of-session rundown to name them.
     /// </summary>
-    private const int MaxDeferred = 200_000;
+    /// <remarks>
+    /// <para>
+    /// A key or file whose control block was created before recording started has no name
+    /// until the rundown announces it, so the operation is parked and re-resolved at the
+    /// end. Parking is memory; the cap is where that stops.
+    /// </para>
+    /// <para>
+    /// Raised from 200,000 after a real session on someone else's machine reported
+    /// <b>59.7% of registry operations unresolved</b>. The buffer had filled and everything
+    /// after it was discarded — and it filled because that session was recording reads,
+    /// which outnumber writes by roughly an order of magnitude.
+    /// </para>
+    /// </remarks>
+    private const int MaxDeferredChanges = 1_500_000;
+
+    /// <summary>
+    /// Reads get their own, much smaller allowance.
+    /// </summary>
+    /// <remarks>
+    /// This is the important half of the fix. A read that cannot be named is close to
+    /// worthless — it says something looked at something. A <em>write</em> that cannot be named
+    /// is evidence that has been lost. Sharing one buffer meant a flood of reads could
+    /// push out the writes, which is exactly the wrong way round.
+    /// </remarks>
+    private const int MaxDeferredReads = 400_000;
 
     private long _deferredDropped;
+    private long _deferredReadsDropped;
+    private int _deferredReadCount;
 
     private void Defer(CollectorContext ctx, Observation template, ulong handle, ulong secondary, string? relative, bool isRegistry)
     {
         // ETW delivers on a single processing thread per session, so no lock is needed
         // between here and the flush, which runs after that thread has finished.
-        if (_deferred.Count >= MaxDeferred)
+        bool isChange = template.Action.IsPersistentChange();
+
+        if (!isChange)
+        {
+            if (_deferredReadCount >= MaxDeferredReads)
+            {
+                _deferredReadsDropped++;
+                if (isRegistry) ctx.Registry.NoteReadPartial();
+                else ctx.Files.NoteReadUnresolved();
+                return;
+            }
+
+            _deferredReadCount++;
+        }
+        else if (_deferred.Count - _deferredReadCount >= MaxDeferredChanges)
         {
             _deferredDropped++;
             if (isRegistry) ctx.Registry.NotePartial();
+            else ctx.Files.NoteUnresolved();
             return;
         }
 
@@ -837,15 +889,27 @@ public sealed class KernelCollector : ICollector
                 ? ctx.Registry.TryResolve(item.Handle, item.RelativeName, out string path)
                 : ctx.Files.TryResolve(item.Handle, item.SecondaryHandle, null, out path);
 
+            bool isChange = item.Template.Action.IsPersistentChange();
+
             if (!ok)
             {
-                if (item.IsRegistry) ctx.Registry.NotePartial();
-                else ctx.Files.NoteUnresolved();
+                if (item.IsRegistry)
+                {
+                    if (isChange) ctx.Registry.NotePartial();
+                    else ctx.Registry.NoteReadPartial();
+                }
+                else if (isChange) ctx.Files.NoteUnresolved();
+                else ctx.Files.NoteReadUnresolved();
                 continue;
             }
 
-            if (item.IsRegistry) ctx.Registry.NoteResolved();
-            else ctx.Files.NoteResolved();
+            if (item.IsRegistry)
+            {
+                if (isChange) ctx.Registry.NoteResolved();
+                else ctx.Registry.NoteReadResolved();
+            }
+            else if (isChange) ctx.Files.NoteResolved();
+            else ctx.Files.NoteReadResolved();
 
             ctx.Emit(item.Template with
             {
@@ -856,6 +920,7 @@ public sealed class KernelCollector : ICollector
 
         int parked = _deferred.Count;
         _deferred.Clear();
+        _deferredReadCount = 0;
 
         if (parked > 0)
         {
@@ -863,10 +928,21 @@ public sealed class KernelCollector : ICollector
                 $"resolved {recovered:N0} of {parked:N0} operations from the end-of-session rundown");
         }
 
+        // Said separately, because the two mean different things to a reader. Losing
+        // reads narrows what the session can say about what a program looked at; losing
+        // changes means evidence of what it did is gone.
         if (_deferredDropped > 0)
         {
             ctx.Store.LogQuality(Name, "warning",
-                $"{_deferredDropped:N0} operations were discarded unresolved because the deferred buffer was full");
+                $"{_deferredDropped:N0} changes were discarded unresolved because the buffer for them was full. "
+                + "Record for a shorter period, or narrow the categories, to keep all of them.");
+        }
+
+        if (_deferredReadsDropped > 0)
+        {
+            ctx.Store.LogQuality(Name, "info",
+                $"{_deferredReadsDropped:N0} read operations were discarded unresolved. Reads are dropped "
+                + "before changes are, so this does not mean any change was lost.");
         }
     }
 

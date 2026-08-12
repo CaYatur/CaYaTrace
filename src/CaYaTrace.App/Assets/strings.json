@@ -468,7 +468,7 @@
     "network.scope.LocalNetwork": "On the local network",
     "network.scope.LocalNetwork_hint": "Another machine on the same network. This is how software coordinates with its own components, and it appears in no firewall log and no proxy.",
     "network.scope.Loopback": "On this machine",
-    "network.scope.Loopback_hint": "One process on this machine talking to another. Shown when contents were captured by the intercepting proxy.",
+    "network.scope.Loopback_hint": "One process on this machine talking to another. A temporary local server a program opens for its own components shows up here.",
     "network.scope.Internet": "On the internet",
     "network.scope.Internet_hint": "A host outside this network.",
     "network.inbound": "came in",
@@ -481,7 +481,16 @@
     "network.body_truncated": "Only the beginning was kept. The start of a conversation is where the protocol, the request and the credentials are; the rest is usually payload.",
     "network.body_unknown": "That content is not in this session.",
     "timeline.include_existing": "Also show what was already running",
-    "network.loopback_not_captured": "Conversations between two processes on this machine are listed under Connections but their contents are not captured here: the Windows packet monitor observes network adapters, and traffic that never leaves the machine does not cross one. Use the intercepting proxy for local HTTP."
+    "network.loopback_not_captured": "Conversations between two processes on this machine are listed under Connections but their contents are not captured here: the Windows packet monitor observes network adapters, and traffic that never leaves the machine does not cross one. Use the intercepting proxy for local HTTP.",
+    "chat.model": "Model",
+    "chat.no_model": "No model — the measured answer",
+    "chat.no_models_found": "None found at that endpoint. Answers still work without one.",
+    "chat.stop": "Stop",
+    "chat.stopped": "stopped before the model answered — this is the measured answer",
+    "remediate.no_session": "No session is loaded, so a plan cannot be built from a recording. Opening a package still works — that is what packages are for.",
+    "network.body_not_exported": "Contents were not carried into this report. Export at full depth to include them.",
+    "network.peer_unknown": "on this machine, other end not identified",
+    "network.loopback_no_contents": "Recorded through Winsock, which is the only thing that sees traffic between two processes on this machine. It reports who talked to whom and how much, but not what was said: the bytes are only ever a pointer into the sending program."
   },
   "tr": {
     "app.title": "CaYaTrace",
@@ -940,7 +949,7 @@
     "network.scope.LocalNetwork": "Yerel ağda",
     "network.scope.LocalNetwork_hint": "Aynı ağdaki başka bir makine. Yazılımın kendi bileşenleriyle haberleşme biçimi budur ve hiçbir güvenlik duvarı günlüğünde ya da vekil sunucuda görünmez.",
     "network.scope.Loopback": "Bu makinede",
-    "network.scope.Loopback_hint": "Bu makinedeki bir sürecin bir diğeriyle konuşması. İçerik araya giren vekil sunucu tarafından yakalandığında görünür.",
+    "network.scope.Loopback_hint": "Bu makinedeki bir sürecin bir diğeriyle konuşması. Bir programın kendi bileşenleri için açtığı geçici yerel sunucu burada görünür.",
     "network.scope.Internet": "İnternette",
     "network.scope.Internet_hint": "Bu ağın dışındaki bir sunucu.",
     "network.inbound": "gelen",
@@ -953,6 +962,15 @@
     "network.body_truncated": "Yalnızca başı saklandı. Bir konuşmanın başı; protokolün, isteğin ve kimlik bilgilerinin bulunduğu yerdir, gerisi genellikle veridir.",
     "network.body_unknown": "Bu içerik bu oturumda yok.",
     "timeline.include_existing": "Zaten çalışmakta olanları da göster",
-    "network.loopback_not_captured": "Bu makinedeki iki süreç arasındaki konuşmalar Bağlantılar altında listelenir, ancak içerikleri burada yakalanmaz: Windows paket izleyicisi ağ bağdaştırıcılarını gözlemler ve makineden hiç çıkmayan trafik bir bağdaştırıcıdan geçmez. Yerel HTTP için araya giren vekil sunucuyu kullanın."
+    "network.loopback_not_captured": "Bu makinedeki iki süreç arasındaki konuşmalar Bağlantılar altında listelenir, ancak içerikleri burada yakalanmaz: Windows paket izleyicisi ağ bağdaştırıcılarını gözlemler ve makineden hiç çıkmayan trafik bir bağdaştırıcıdan geçmez. Yerel HTTP için araya giren vekil sunucuyu kullanın.",
+    "chat.model": "Model",
+    "chat.no_model": "Model yok — ölçülen yanıt",
+    "chat.no_models_found": "Bu uç noktada model bulunamadı. Yanıtlar model olmadan da çalışır.",
+    "chat.stop": "Durdur",
+    "chat.stopped": "model yanıtlamadan durduruldu — bu, ölçülen yanıt",
+    "remediate.no_session": "Yüklü oturum yok, bu yüzden bir kayıttan plan oluşturulamaz. Paket açmak yine de çalışır; paketler zaten bunun içindir.",
+    "network.body_not_exported": "İçerik bu rapora taşınmadı. Dahil etmek için tam derinlikte dışa aktarın.",
+    "network.peer_unknown": "bu makinede, diğer uç belirlenemedi",
+    "network.loopback_no_contents": "Winsock üzerinden kaydedildi; bu makinedeki iki süreç arasındaki trafiği gören tek kaynak odur. Kimin kiminle ve ne kadar konuştuğunu bildirir, ne konuşulduğunu değil: baytlar yalnızca gönderen programın belleğine bir işaretçi olarak geçer."
   }
 }

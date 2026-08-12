@@ -115,8 +115,15 @@ public sealed class CollectorContext
     {
         Quality.EventsCollected = Collected;
         Quality.EventsDroppedBySink = Sink.Dropped;
+        // Over changes only. A read that could not be named says something looked at
+        // something; a change that could not be named is evidence of what a program did,
+        // gone. Reported together, a session where every change was named still showed
+        // "59.7% of registry operations unresolved" — true of everything the machine did,
+        // and misleading about the only part that mattered.
         Quality.FileNameHitRate = Files.HitRate;
         Quality.RegistryNameHitRate = Registry.HitRate;
+        Quality.FileReadNameHitRate = Files.ReadHitRate;
+        Quality.RegistryReadNameHitRate = Registry.ReadHitRate;
         Quality.UnattributedFlows = Flows.UnattributedCount;
     }
 }

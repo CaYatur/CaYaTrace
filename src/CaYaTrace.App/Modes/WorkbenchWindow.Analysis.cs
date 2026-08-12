@@ -64,7 +64,11 @@ public sealed partial class WorkbenchWindow
             Language = Strings.Language,
         };
 
-        string suggested = Sanitize(_session.Name) + request.DefaultExtension;
+        // Without the subject's own extension. A session recorded from "Setup.exe" is
+        // named after it, so appending the format produced "Setup.exe.html" — and Windows
+        // hides the last known extension, so the dialog displayed "Setup.exe" and the
+        // operator reasonably concluded the tool was about to write an executable.
+        string suggested = Sanitize(StripProgramExtension(_session.Name)) + request.DefaultExtension;
 
         using var dialog = new SaveFileDialog
         {
@@ -164,6 +168,29 @@ public sealed partial class WorkbenchWindow
             if (Enum.TryParse(name, ignoreCase: true, out EventCategory category)) result.Add(category);
 
         return result.Count == 0 ? null : result;
+    }
+
+    /// <summary>
+    /// Drops a program extension from a session name, and only a program extension.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately a known list rather than <c>Path.GetFileNameWithoutExtension</c>, which
+    /// would turn "e-Kilit Kurulum 12.09.2025" into "e-Kilit Kurulum 12.09" — a session
+    /// name is free text and frequently contains dots that are not extensions.
+    /// </remarks>
+    private static readonly string[] ProgramExtensions =
+    {
+        ".exe", ".dll", ".msi", ".com", ".scr", ".bat", ".cmd", ".ps1",
+    };
+
+    private static string StripProgramExtension(string name)
+    {
+        foreach (string extension in ProgramExtensions)
+        {
+            if (name.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+                return name[..^extension.Length];
+        }
+        return name;
     }
 
     private static string Sanitize(string name)
@@ -863,11 +890,22 @@ public sealed partial class WorkbenchWindow
     /// briefly, the models people run locally are small enough to confabulate confidently,
     /// and an answer about someone's own machine is not a good place for that.
     /// </remarks>
+    /// <summary>
+    /// The question being answered right now, so it can be called off.
+    /// </summary>
+    /// <remarks>
+    /// A local model on a laptop routinely takes half a minute, and an operator who has
+    /// changed their mind should not have to wait it out. Cancelling leaves the measured
+    /// answer, which was computed before the model was ever contacted.
+    /// </remarks>
+    private CancellationTokenSource? _askCancellation;
+
     private async Task AskAsync(JsonElement payload)
     {
         if (_store is null || _session is null)
         {
             Toast(Strings.T("assistant.no_session"), "error");
+            Post("chat", new { busy = false });
             return;
         }
 
@@ -875,7 +913,14 @@ public sealed partial class WorkbenchWindow
         if (question.Length == 0) return;
 
         AnswerDetail detail = Str(payload, "detail") == "detailed" ? AnswerDetail.Detailed : AnswerDetail.Brief;
-        string? model = Str(payload, "model");
+
+        // An empty model is a choice, not a mistake: answer from the session alone.
+        string? model = Str(payload, "model") is { Length: > 0 } chosen ? chosen : null;
+
+        _askCancellation?.Cancel();
+        _askCancellation?.Dispose();
+        _askCancellation = new CancellationTokenSource();
+        CancellationToken token = _askCancellation.Token;
 
         Post("chat", new { busy = true });
 
@@ -894,16 +939,45 @@ public sealed partial class WorkbenchWindow
             var assistant = new SessionAssistant(questions, client);
 
             AssistantReply reply = await assistant
-                .AskAsync(question, detail, Strings.Language, model)
+                .AskAsync(question, detail, Strings.Language, model, token)
                 .ConfigureAwait(true);
 
             PostReply(reply);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the operator. The measured answer is still worth showing —
+            // it never depended on the model.
+            PostReply(new AssistantReply
+            {
+                Question = question,
+                Answer = BuildMeasuredAnswer(question, detail),
+                ModelNote = Strings.T("chat.stopped"),
+            });
         }
         catch (Exception ex) when (ex is OllamaException or IOException or Microsoft.Data.Sqlite.SqliteException)
         {
             Post("chat", new { busy = false });
             Toast(ex.Message, "error");
         }
+    }
+
+    /// <summary>Recomputes the answer without a model, for the cancelled path.</summary>
+    private SessionAnswer BuildMeasuredAnswer(string question, AnswerDetail detail)
+    {
+        List<ProcessNode> processes = _store!.LoadProcesses();
+        var byKey = new Dictionary<ProcessKey, ProcessNode>();
+        foreach (ProcessNode node in processes) byKey.TryAdd(node.Key, node);
+
+        IReadOnlyList<PersistenceRecord> persistence =
+            new PersistenceAnalyzer(byKey.GetValueOrDefault).Analyze(_store.Query());
+
+        return new SessionQuestions(_store, _session!, persistence, processes).Answer(question, detail);
+    }
+
+    private void CancelAsk()
+    {
+        _askCancellation?.Cancel();
     }
 
     private void PostReply(AssistantReply reply) => Post("chat", new

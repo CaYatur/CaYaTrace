@@ -54,6 +54,20 @@ public sealed class DataQuality
     /// <summary>Fraction of registry KCB lookups that resolved to a key path.</summary>
     public double RegistryNameHitRate { get; set; } = 1.0;
 
+    /// <summary>
+    /// The same measures over read operations, kept apart from the ones above.
+    /// </summary>
+    /// <remarks>
+    /// A read that could not be named says something looked at something; a change that
+    /// could not be named is evidence of what a program did, gone. Reported together,
+    /// a session where every change was named still announced "59.7% of registry
+    /// operations unresolved" — true of everything the machine did, and misleading about
+    /// the only part an analyst was reading the figure for.
+    /// </remarks>
+    public double FileReadNameHitRate { get; set; } = 1.0;
+
+    public double RegistryReadNameHitRate { get; set; } = 1.0;
+
     /// <summary>Network flows that could not be tied to any process.</summary>
     public long UnattributedFlows { get; set; }
 

@@ -97,6 +97,27 @@ public sealed class FileObjectResolver
 
     public void NoteUnresolved() => Interlocked.Increment(ref _unnamed);
 
+    /// <summary>
+    /// Reads are measured apart from changes; see
+    /// <see cref="RegistryKeyResolver.HitRate"/> for why.
+    /// </summary>
+    public double ReadHitRate
+    {
+        get
+        {
+            long named = Interlocked.Read(ref _readNamed);
+            long unnamed = Interlocked.Read(ref _readUnnamed);
+            return named + unnamed == 0 ? 1.0 : (double)named / (named + unnamed);
+        }
+    }
+
+    private long _readNamed;
+    private long _readUnnamed;
+
+    public void NoteReadResolved() => Interlocked.Increment(ref _readNamed);
+
+    public void NoteReadUnresolved() => Interlocked.Increment(ref _readUnnamed);
+
     /// <summary>Records the name announced by a create/open event.</summary>
     public void NoteOpen(ulong fileObject, ulong fileKey, string? name)
     {

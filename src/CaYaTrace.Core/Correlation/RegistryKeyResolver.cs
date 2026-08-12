@@ -56,6 +56,21 @@ public sealed class RegistryKeyResolver
     /// operation, but it cannot be searched, compared across machines, or acted on by a
     /// removal plan, so treating it as a success would overstate what the session holds.
     /// </remarks>
+    /// <remarks>
+    /// <para>
+    /// Reads are excluded, and that is the point of the split. A read that could not be
+    /// named says something looked at something; a <em>change</em> that could not be named is
+    /// evidence of what a program did, gone. Counting them together produced a session
+    /// banner reading "59.7% of registry operations unresolved" on a recording where
+    /// every change had in fact been named — alarming, and about the wrong thing.
+    /// </para>
+    /// <para>
+    /// A relative fragment such as <c>Software\Example</c> still counts against this even
+    /// though <see cref="Resolve"/> returns it: the fragment is worth showing next to its
+    /// operation, but it cannot be searched, compared across machines, or acted on by a
+    /// removal plan.
+    /// </para>
+    /// </remarks>
     public double HitRate
     {
         get
@@ -65,6 +80,26 @@ public sealed class RegistryKeyResolver
             return absolute + partial == 0 ? 1.0 : (double)absolute / (absolute + partial);
         }
     }
+
+    /// <summary>The same measure over read operations, reported separately.</summary>
+    public double ReadHitRate
+    {
+        get
+        {
+            long absolute = Interlocked.Read(ref _readAbsolute);
+            long partial = Interlocked.Read(ref _readPartial);
+            return absolute + partial == 0 ? 1.0 : (double)absolute / (absolute + partial);
+        }
+    }
+
+    private long _readAbsolute;
+    private long _readPartial;
+
+    /// <summary>Records a resolved read, which is counted apart from changes.</summary>
+    public void NoteReadResolved() => Interlocked.Increment(ref _readAbsolute);
+
+    /// <summary>Records a read that never resolved to a full path.</summary>
+    public void NoteReadPartial() => Interlocked.Increment(ref _readPartial);
 
     /// <summary>Operations that resolved only to a relative fragment.</summary>
     public long PartiallyResolved => Interlocked.Read(ref _partial);

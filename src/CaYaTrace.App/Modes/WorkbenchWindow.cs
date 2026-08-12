@@ -261,6 +261,7 @@ public sealed partial class WorkbenchWindow : Form
             case "aiProbe": _ = AiProbeAsync(Str(payload, "endpoint")); break;
             case "aiExplain": _ = AiExplainAsync(Str(payload, "endpoint"), Str(payload, "model")); break;
             case "ask": _ = AskAsync(payload); break;
+            case "askCancel": CancelAsk(); break;
             case "vtLookup": _ = VirusTotalAsync(Str(payload, "key")); break;
             case "readBody": ReadBody(payload); break;
 

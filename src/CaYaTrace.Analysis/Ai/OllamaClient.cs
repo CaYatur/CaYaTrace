@@ -152,10 +152,33 @@ public sealed class OllamaClient : IDisposable
     /// JSON schema the answer must conform to. Never null in this pipeline: unconstrained
     /// generation from a small model does not produce usable output.
     /// </param>
+    /// <summary>
+    /// Asks for prose rather than a structured answer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An explicit overload, and not an optional argument on the one below, because that
+    /// one takes <c>object schema</c> in third position — so <c>GenerateAsync(model, prompt,
+    /// token)</c> compiled happily, boxed the cancellation token into the response-format
+    /// field, and passed <c>default</c> as the real token. The request then carried a
+    /// nonsense format constraint and could not be cancelled, so the assistant sat on
+    /// "working" forever and its timeout never fired. Measured, from a chat that never
+    /// answered.
+    /// </para>
+    /// <para>
+    /// Slightly warmer than the structured path and allowed more tokens, because this is
+    /// used to reword an answer that is already correct: determinism buys nothing here,
+    /// and a sentence cut off mid-clause is worse than a slightly different sentence.
+    /// </para>
+    /// </remarks>
+    public Task<string> GenerateAsync(string model, string prompt, CancellationToken cancellationToken)
+        => GenerateAsync(model, prompt, schema: null, maxTokens: 800, temperature: 0.2,
+            seed: null, cancellationToken);
+
     public async Task<string> GenerateAsync(
         string model,
         string prompt,
-        object schema,
+        object? schema,
         int maxTokens = 512,
         double temperature = 0,
         int? seed = null,
@@ -166,7 +189,6 @@ public sealed class OllamaClient : IDisposable
             ["model"] = model,
             ["prompt"] = prompt,
             ["stream"] = false,
-            ["format"] = schema,
 
             // Reasoning models otherwise return their answer in `thinking` and leave
             // `response` empty. See the class remarks.
@@ -182,6 +204,10 @@ public sealed class OllamaClient : IDisposable
                 ["top_p"] = temperature <= 0 ? 1.0 : 0.9,
             },
         };
+
+        // Omitted entirely when there is no schema. Sending a null format makes some
+        // builds refuse the request rather than treating it as unconstrained.
+        if (schema is not null) request["format"] = schema;
 
         try
         {

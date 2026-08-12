@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CaYaTrace.Analysis;
@@ -258,10 +259,18 @@ public static class SessionProjection
                      Categories = new List<EventCategory> { EventCategory.Network },
                  }))
         {
-            if (o.Source != EvidenceSource.PacketCapture) continue;
             if (result.Count >= request.NetworkRowLimit) break;
             if (!owned(o.Actor)) continue;
             if (o.Details is not { Length: > 0 } details) continue;
+
+            // Two sources produce conversations and both belong here: the packet capture,
+            // which carries contents for traffic that crossed an adapter, and Winsock,
+            // which is the only thing that sees traffic that never left the machine.
+            if (o.Source != EvidenceSource.PacketCapture
+                && !details.Contains("\"via\":\"winsock\"", StringComparison.Ordinal))
+            {
+                continue;
+            }
 
             JsonElement facts;
             try
@@ -292,19 +301,108 @@ public static class SessionProjection
                 inbound = Flag(facts, "inbound"),
                 truncated = Flag(facts, "truncated"),
 
-                // Hashes, not content. A conversation can be megabytes and a session can
-                // hold thousands of them; the bytes are fetched only when somebody opens
-                // one.
+                // The hash finds the full bytes in the session; the preview travels with
+                // the report. An exported report has no engine behind it, so a hash alone
+                // gave the reader a button that reached nothing — measured, in an export
+                // somebody actually tried to read.
                 sentBody = Text(facts, "sentBody"),
                 receivedBody = Text(facts, "receivedBody"),
                 sentBytes = Number(facts, "sentBytes"),
                 receivedBytes = Number(facts, "receivedBytes"),
+                sentPreview = Preview(store, Text(facts, "sentBody"), request),
+                receivedPreview = Preview(store, Text(facts, "receivedBody"), request),
                 confidence = o.Confidence.ToString(),
                 evidence = Text(facts, "evidence"),
+
+                // Who is at the other end, for conversations that never left the machine.
+                // Their contents cannot be captured, so naming the program being talked
+                // to is most of the answer that is available.
+                peerProcess = Text(facts, "peerProcess"),
+                contentsUnavailable = Flag(facts, "contentsUnavailable"),
+                via = Text(facts, "via") ?? "packets",
             });
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// The beginning of a stored conversation body, as readable text.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Carried in the projection so an exported report can show it. The live workbench
+    /// can fetch the whole thing on demand; a report opened on another machine has
+    /// nothing to fetch from, and a button that reaches nothing is worse than no button.
+    /// </para>
+    /// <para>
+    /// Bounded hard, and only at full scope. A session can hold thousands of
+    /// conversations and inlining all of them would turn a report into something nobody
+    /// can open — and every byte of it came off the wire, so a report carrying more of it
+    /// is a report that leaks more if it is shared carelessly.
+    /// </para>
+    /// </remarks>
+    private static string? Preview(SessionStore store, string? hash, ExportRequest request)
+    {
+        const int Bytes = 4096;
+
+        if (request.Scope != ExportScope.Full) return null;
+        if (hash is not { Length: 64 }) return null;
+
+        byte[]? body;
+        try { body = store.ReadBlob(hash); }
+        catch (Exception ex) when (ex is IOException or Microsoft.Data.Sqlite.SqliteException) { return null; }
+
+        if (body is null || body.Length == 0) return null;
+
+        byte[] slice = body.Length <= Bytes ? body : body[..Bytes];
+        return IsMostlyText(slice)
+            ? new UTF8Encoding(false, false).GetString(slice)
+            : HexDump(slice);
+    }
+
+    private static bool IsMostlyText(byte[] data)
+    {
+        int length = Math.Min(data.Length, 512);
+        int printable = 0;
+
+        for (int i = 0; i < length; i++)
+        {
+            byte b = data[i];
+            if (b is 9 or 10 or 13 || (b >= 32 && b < 127)) printable++;
+        }
+
+        return length > 0 && printable * 10 >= length * 9;
+    }
+
+    private static string HexDump(byte[] data)
+    {
+        var sb = new StringBuilder(data.Length * 4);
+
+        for (int offset = 0; offset < data.Length; offset += 16)
+        {
+            int run = Math.Min(16, data.Length - offset);
+            sb.Append(offset.ToString("x8", System.Globalization.CultureInfo.InvariantCulture)).Append("  ");
+
+            for (int i = 0; i < 16; i++)
+            {
+                sb.Append(i < run
+                    ? data[offset + i].ToString("x2", System.Globalization.CultureInfo.InvariantCulture)
+                    : "  ").Append(' ');
+                if (i == 7) sb.Append(' ');
+            }
+
+            sb.Append(' ');
+            for (int i = 0; i < run; i++)
+            {
+                byte b = data[offset + i];
+                sb.Append(b >= 32 && b < 127 ? (char)b : '.');
+            }
+
+            sb.Append('\n');
+        }
+
+        return sb.ToString();
     }
 
     private static string? Text(JsonElement o, string name)
@@ -459,6 +557,31 @@ public static class SessionProjection
             }
         }
 
+        // Who is on the other end of a conversation that never leaves this machine.
+        //
+        // Both ends of a loopback connection are recorded as separate flows — deliberately,
+        // because the same bytes are seen twice and each end has its own owner. That also
+        // means the other end can be looked up: the flow whose local endpoint is this
+        // one's remote endpoint is the peer, and its owner is the process being talked to.
+        //
+        // Worth doing because the contents cannot be captured. The packet monitor watches
+        // network adapters and loopback traffic crosses none, so "it connected to
+        // 127.0.0.1:61274" was the whole of what a session could say — and naming the
+        // program at the other end answers most of what the operator wanted to know.
+        var byLocalEndpoint = new Dictionary<string, NetworkFlow>(StringComparer.OrdinalIgnoreCase);
+        foreach (NetworkFlow flow in storedFlows)
+            byLocalEndpoint.TryAdd($"{flow.Key.LocalAddress}:{flow.Key.LocalPort}", flow);
+
+        string? PeerProcess(NetworkFlow flow)
+        {
+            if (!System.Net.IPAddress.IsLoopback(flow.Key.RemoteAddress)) return null;
+            if (!byLocalEndpoint.TryGetValue($"{flow.Key.RemoteAddress}:{flow.Key.RemotePort}", out NetworkFlow? peer))
+                return null;
+            if (peer.Owner == ProcessKey.None || peer.Owner == flow.Owner) return Name(peer.Owner);
+
+            return Name(peer.Owner);
+        }
+
         List<object> flows = request.Allows(EventCategory.Network)
             ? storedFlows
                 .Where(f => Owned(f.Owner))
@@ -466,6 +589,8 @@ public static class SessionProjection
                 .Take(request.NetworkRowLimit)
                 .Select(f => (object)new
                 {
+                    peerProcess = PeerProcess(f),
+                    onThisMachine = System.Net.IPAddress.IsLoopback(f.Key.RemoteAddress),
                     protocol = f.Key.Protocol.ToString(),
                     local = $"{f.Key.LocalAddress}:{f.Key.LocalPort}",
                     remote = $"{f.Key.RemoteAddress}:{f.Key.RemotePort}",

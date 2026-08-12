@@ -37,6 +37,16 @@ public sealed class SessionOptions
     /// </summary>
     public bool CollectNetworkMetadata { get; init; } = true;
 
+    /// <summary>
+    /// Watch Winsock, so conversations between processes on this machine are recorded.
+    /// </summary>
+    /// <remarks>
+    /// On by default and cheap. It is the only source that sees loopback traffic at all:
+    /// the packet monitor observes network adapters, and traffic that never leaves the
+    /// machine crosses none of them.
+    /// </remarks>
+    public bool CollectLocalSockets { get; init; } = true;
+
     public NetworkCollectorOptions Network { get; init; } = NetworkCollectorOptions.Default;
 
     /// <summary>Capture packets with the Windows packet monitor. Off by default.</summary>
@@ -189,6 +199,23 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             // the user-mode name-resolution and HTTP providers cannot share it.
             if (_options.CollectNetworkMetadata)
                 _collectors.Add(new NetworkCollector(_options.Network));
+
+            // Winsock, which is the only place a conversation that never leaves the
+            // machine is visible at all. The packet monitor watches network adapters and
+            // loopback traffic crosses none, so without this a program talking to its own
+            // local helper appears as a connection to 127.0.0.1 carrying zero bytes.
+            if (_options.CollectLocalSockets)
+            {
+                _collectors.Add(new Network.WinsockCollector(new Network.WinsockCollectorOptions
+                {
+                    IncludeLoopback = true,
+
+                    // The kernel network provider already reports external connections
+                    // with the same attribution; recording both would count every one
+                    // of them twice.
+                    IncludeExternal = false,
+                }));
+            }
 
             // Off by default: a full-payload capture on a busy machine reaches
             // hundreds of megabytes in minutes, and most sessions do not need the

@@ -1,8 +1,7 @@
 using System.Text.Json;
 using System.Windows.Forms;
-using CaYaTrace.Core.Correlation;
-using CaYaTrace.Core.Graph;
 using CaYaTrace.Core.Model;
+using CaYaTrace.Export;
 using CaYaTrace.Storage;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -13,41 +12,43 @@ namespace CaYaTrace.App.Modes;
 /// The workbench window: a WebView2 surface over the same engine the CLI drives.
 /// </summary>
 /// <remarks>
-/// The web layer is a <em>view</em>. It receives already-projected tree nodes and sends
-/// back intents; it never touches a session database and never issues a query of its
-/// own. Keeping that boundary sharp is what makes the exported HTML report possible —
-/// the same markup renders from inlined data with no engine behind it at all.
+/// <para>
+/// The web layer is a <em>view</em>. It receives already-projected data and sends back
+/// intents; it never touches a session database and never issues a query of its own.
+/// Keeping that boundary sharp is what makes the exported HTML report possible — the
+/// same markup renders from inlined data with no engine behind it at all.
+/// </para>
+/// <para>
+/// It also draws the security line in the right place. Everything the page can ask for
+/// is an enumerated intent handled here, so a string that arrived from a recorded
+/// program cannot become a file path, a command line, or a navigation. The page can ask
+/// to remove items from a plan; it cannot name a file to delete.
+/// </para>
 /// </remarks>
-public sealed class WorkbenchWindow : Form
+public sealed partial class WorkbenchWindow : Form
 {
     private readonly WebView2 _view;
+    private readonly UserSettings _settings;
     private readonly string? _initialSession;
+
     private SessionStore? _store;
+    private SessionInfo? _session;
+    private string? _sessionPath;
 
-    /// <summary>
-    /// Enums are written as names, not numbers.
-    /// </summary>
-    /// <remarks>
-    /// The view keys category colours and node kinds off these values, and an exported
-    /// report is read by people. <c>"Category": 3</c> is both a silent lookup failure in the
-    /// page — the chips rendered as bare numbers — and meaningless to a human opening
-    /// the JSON.
-    /// </remarks>
-    private static readonly JsonSerializerOptions Json = new()
-    {
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
-    };
+    /// <summary>Section to open on, from <c>--view</c>. Null lets the page decide.</summary>
+    public string? InitialView { get; init; }
 
-    public WorkbenchWindow(string? sessionPath)
+    public WorkbenchWindow(string? sessionPath, UserSettings settings)
     {
         _initialSession = sessionPath;
+        _settings = settings;
 
         Text = "CaYaTrace";
-        Width = 1400;
-        Height = 900;
-        MinimumSize = new System.Drawing.Size(900, 600);
+        Width = 1440;
+        Height = 940;
+        MinimumSize = new System.Drawing.Size(940, 620);
         StartPosition = FormStartPosition.CenterScreen;
+        Icon = AppIcon.Load();
 
         // Matches the page background so the window does not flash white before the
         // WebView paints — jarring on a dark theme.
@@ -57,7 +58,8 @@ public sealed class WorkbenchWindow : Form
         Controls.Add(_view);
 
         Load += async (_, _) => await InitializeAsync();
-        FormClosed += (_, _) => _store?.Dispose();
+        FormClosing += (_, e) => OnClosingWindow(e);
+        FormClosed += (_, _) => Cleanup();
     }
 
     private async Task InitializeAsync()
@@ -74,10 +76,7 @@ public sealed class WorkbenchWindow : Form
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
-                $"The WebView2 runtime could not be started.\n\n{ex.Message}\n\n" +
-                "Install it from https://developer.microsoft.com/microsoft-edge/webview2/ " +
-                "or use the command line instead.",
+            MessageBox.Show($"{Strings.T("error.webview_missing")}\n\n{ex.Message}",
                 "CaYaTrace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             Close();
             return;
@@ -107,11 +106,37 @@ public sealed class WorkbenchWindow : Form
             }
         };
         core.NewWindowRequested += (_, e) => e.Handled = true;
+        core.DownloadStarting += (_, e) => e.Cancel = true;
 
         core.WebMessageReceived += OnWebMessage;
-
         core.NavigateToString(Assets.Workbench);
     }
+
+    /// <summary>Posts a message to the page, marshalling to the UI thread if needed.</summary>
+    private void Post(string type, object payload)
+    {
+        if (IsDisposed || _view.IsDisposed) return;
+
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(() => Post(type, payload)); }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+            return;
+        }
+
+        if (_view.CoreWebView2 is null) return;
+
+        try
+        {
+            _view.CoreWebView2.PostWebMessageAsString(
+                JsonSerializer.Serialize(new { type, payload }, SessionProjection.Json));
+        }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+    }
+
+    private void Toast(string text, string? kind = null) => Post("toast", new { text, kind });
 
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
@@ -119,113 +144,301 @@ public sealed class WorkbenchWindow : Form
         try { raw = e.TryGetWebMessageAsString(); }
         catch (ArgumentException) { return; }
 
+        JsonElement payload;
         string type;
         try
         {
             using JsonDocument doc = JsonDocument.Parse(raw);
             type = doc.RootElement.TryGetProperty("type", out JsonElement t) ? t.GetString() ?? string.Empty : string.Empty;
+            payload = doc.RootElement.TryGetProperty("payload", out JsonElement pl)
+                ? pl.Clone()
+                : default;
         }
         catch (JsonException)
         {
             return;
         }
 
+        try
+        {
+            Dispatch(type, payload);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                      or Microsoft.Data.Sqlite.SqliteException or InvalidOperationException)
+        {
+            // A handler failing is a bad session, a locked file, or a missing tool — all
+            // things the operator can act on. Crashing the workbench over one is not.
+            Toast($"{ex.Message}", "error");
+        }
+    }
+
+    private void Dispatch(string type, JsonElement payload)
+    {
         switch (type)
         {
             case "ready":
+                SendBoot();
                 if (_initialSession is not null) LoadSession(_initialSession);
                 break;
 
-            case "buildRemovalPlan":
-                // Deliberately not wired to anything destructive from the view. The
-                // plan is written to disk for review; applying it is a separate,
-                // explicit action.
-                MessageBox.Show(
-                    "Removal-plan export from the workbench lands in 0.2.\n\n" +
-                    "For now:\n" +
-                    "  CaYaTrace report --session <dir> --export-package plan.ctpkg\n" +
-                    "  CaYaTrace remediate --package plan.ctpkg",
-                    "CaYaTrace", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            case "setLanguage":
+                string? lang = Str(payload, "language");
+                if (Strings.Supports(lang))
+                {
+                    Strings.Language = lang!;
+                    _settings.Language = Strings.Language;
+                    _settings.Save();
+                }
                 break;
+
+            case "relaunchElevated":
+                RelaunchElevated();
+                break;
+
+            case "pickFile": PickFile(Str(payload, "purpose")); break;
+            case "pickFolder": PickFolder(Str(payload, "purpose")); break;
+
+            case "startCapture": StartCapture(payload); break;
+            case "stopCapture": StopCapture(); break;
+
+            case "listSessions": ListSessions(Str(payload, "root")); break;
+            case "loadSession": LoadSession(Str(payload, "path") ?? string.Empty); break;
+            case "deleteSession": DeleteSession(Str(payload, "path")); break;
+            case "revealPath": Reveal(Str(payload, "path")); break;
+
+            case "export": ExportSession(payload); break;
+
+            case "buildPlan": BuildPlan(payload); break;
+            case "exportPackage": ExportPackage(payload); break;
+            case "applyPlan": ApplyPlan(payload); break;
+
+            case "aiStatus": _ = AiStatusAsync(Str(payload, "endpoint")); break;
+            case "aiProbe": _ = AiProbeAsync(Str(payload, "endpoint")); break;
+            case "aiExplain": _ = AiExplainAsync(Str(payload, "endpoint"), Str(payload, "model")); break;
+            case "vtLookup": _ = VirusTotalAsync(Str(payload, "key")); break;
+
+            case "compareRun": CompareRun(payload); break;
+            case "compareExportPackage": CompareExportPackage(payload); break;
+
+            case "fleetState": PostFleetState(); break;
+            case "fleetStart": FleetStart(Int(payload, "port")); break;
+            case "fleetStop": FleetStop(); break;
+            case "fleetNewCode": FleetNewCode(); break;
+            case "fleetDecide": FleetDecide(Str(payload, "agent"), Bool(payload, "approve")); break;
+            case "fleetCollect": FleetCollect(Bool(payload, "start")); break;
+
+            case "modalResult": CompleteModal(Str(payload, "id"), Bool(payload, "accepted")); break;
         }
     }
 
-    /// <summary>Loads a session and pushes its projected tree to the view.</summary>
+    private void SendBoot() => Post("boot", new
+    {
+        language = Strings.Language,
+        languages = Strings.Available,
+        elevated = Privilege.IsElevated(),
+        version = BuildInfo.Version,
+        sessionRoot = _settings.SessionRoot ?? UserSettings.DefaultSessionRoot,
+        ollama = _settings.OllamaEndpoint ?? "http://localhost:11434",
+        fleetPort = _settings.FleetPort,
+        view = InitialView,
+    });
+
+    /// <summary>Loads a session and pushes its projection to the view.</summary>
     public void LoadSession(string path)
     {
+        string resolved;
+        try { resolved = SessionPaths.Resolve(path); }
+        catch (FileNotFoundException)
+        {
+            Toast(Strings.Format("error.not_a_session", path), "error");
+            return;
+        }
+
         try
         {
             _store?.Dispose();
-            _store = SessionStore.Open(path);
+            _store = SessionStore.Open(resolved);
+            _sessionPath = resolved;
 
-            SessionInfo? session = _store.LoadSessionInfo();
-            if (session is null)
+            _session = _store.LoadSessionInfo();
+            if (_session is null)
             {
-                MessageBox.Show($"{path} does not contain a CaYaTrace session.",
-                    "CaYaTrace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Toast(Strings.Format("error.not_a_session", path), "error");
+                _store.Dispose();
+                _store = null;
                 return;
             }
 
-            string payload = BuildPayload(_store, session);
-            _view.CoreWebView2.PostWebMessageAsString(
-                JsonSerializer.Serialize(new { type = "session", payload = JsonDocument.Parse(payload).RootElement }, Json));
+            PushSession();
         }
         catch (Exception ex) when (ex is IOException or Microsoft.Data.Sqlite.SqliteException)
         {
-            MessageBox.Show($"Could not open the session.\n\n{ex.Message}",
-                "CaYaTrace", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Toast($"{Strings.T("error.session_open")} {ex.Message}", "error");
         }
     }
 
-    /// <summary>
-    /// Projects a stored session into the shape the view renders. Shared with the HTML
-    /// exporter so the workbench and the report can never disagree.
-    /// </summary>
-    public static string BuildPayload(SessionStore store, SessionInfo session, CausalGraphOptions? options = null)
+    private void PushSession()
     {
-        var processes = new ProcessTable();
-        foreach (ProcessNode node in store.LoadProcesses()) processes.AddOrUpdate(node);
+        if (_store is null || _session is null) return;
 
-        var flows = new FlowTable();
-        foreach (NetworkFlow flow in store.LoadFlows())
-            flows.NoteConnect(flow.Key, flow.Owner, flow.FirstSeen, flow.OwnerEvidence ?? "stored");
-
-        var builder = new CausalGraphBuilder(processes, flows);
-        options ??= new CausalGraphOptions
+        var request = new ExportRequest
         {
-            RootProcess = session.RootProcess == ProcessKey.None ? null : session.RootProcess,
+            Scope = ExportScope.Standard,
+            Language = Strings.Language,
         };
-        IReadOnlyList<CausalNode> roots = builder.Build(store.Query(), options);
 
-        // Findings are computed from the same rules the CLI uses, and deliberately
-        // without a model: an exported report must be reproducible by anyone opening
-        // it, and must not imply a model saw data it never saw.
-        var inScope = new HashSet<ProcessKey>(
-            processes.Snapshot().Where(static p => p.InScope).Select(static p => p.Key));
+        Post("session", SessionProjection.BuildModel(_store, _session, request));
+    }
 
-        IReadOnlyList<Analysis.ScoredArtifact> findings = new Analysis.ArtifactScorer().TopFindings(
-            store.Query().Where(o => o.Actor == ProcessKey.None || inScope.Contains(o.Actor)),
-            limit: 60);
+    private void RelaunchElevated()
+    {
+        if (Privilege.IsElevated()) return;
 
-        return JsonSerializer.Serialize(new
+        // Forwarding the currently loaded session means the elevated instance opens
+        // where the operator left off rather than on an empty workbench.
+        string[] args = _sessionPath is null
+            ? Array.Empty<string>()
+            : new[] { "--session", _sessionPath };
+
+        if (Privilege.TryRelaunchElevated(args)) Close();
+        else Toast(Strings.T("error.needs_admin"), "error");
+    }
+
+    private void Reveal(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        string full = Path.GetFullPath(path);
+        bool isDirectory = Directory.Exists(full);
+        if (!isDirectory && !File.Exists(full)) return;
+
+        // ArgumentList rather than a joined string. The path came from a session
+        // listing, but a quoted-argument bug here is a command-injection bug, and the
+        // API that cannot have one costs nothing.
+        var info = new System.Diagnostics.ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+        if (isDirectory) info.ArgumentList.Add(full);
+        else info.ArgumentList.Add($"/select,{full}");
+
+        try { System.Diagnostics.Process.Start(info); }
+        catch (System.ComponentModel.Win32Exception) { }
+    }
+
+    private void OnClosingWindow(FormClosingEventArgs e)
+    {
+        // A running capture holds an ETW session registered with the kernel. Closing
+        // the window without stopping it leaves that session consuming buffers until
+        // the next run sweeps it up, and loses the after-snapshot entirely.
+        if (_capture is null) return;
+
+        DialogResult answer = MessageBox.Show(
+            Strings.T("capture.stopping"),
+            "CaYaTrace", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+
+        if (answer == DialogResult.Cancel) { e.Cancel = true; return; }
+
+        StopCaptureSynchronously();
+    }
+
+    private void Cleanup()
+    {
+        _captureTimer?.Dispose();
+        _store?.Dispose();
+        _fleetHost?.Dispose();
+    }
+
+    // ------------------------------------------------------------- payload readers
+
+    private static string? Str(JsonElement payload, string name)
+        => payload.ValueKind == JsonValueKind.Object
+           && payload.TryGetProperty(name, out JsonElement value)
+           && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static int Int(JsonElement payload, string name)
+        => payload.ValueKind == JsonValueKind.Object
+           && payload.TryGetProperty(name, out JsonElement value)
+           && value.TryGetInt32(out int parsed)
+            ? parsed
+            : 0;
+
+    private static bool Bool(JsonElement payload, string name)
+        => payload.ValueKind == JsonValueKind.Object
+           && payload.TryGetProperty(name, out JsonElement value)
+           && value.ValueKind == JsonValueKind.True;
+
+    private static List<string> StringList(JsonElement payload, string name)
+    {
+        var result = new List<string>();
+        if (payload.ValueKind != JsonValueKind.Object) return result;
+        if (!payload.TryGetProperty(name, out JsonElement array)) return result;
+        if (array.ValueKind != JsonValueKind.Array) return result;
+
+        foreach (JsonElement item in array.EnumerateArray())
+            if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } s)
+                result.Add(s);
+
+        return result;
+    }
+}
+
+/// <summary>
+/// Loads the embedded application icon.
+/// </summary>
+/// <remarks>
+/// From a resource rather than a file beside the executable: the shipped build is a
+/// single-file bundle where no .ico exists on disk, and a window with the default
+/// placeholder icon looks like something that failed to install.
+/// </remarks>
+internal static class AppIcon
+{
+    private const string Resource = "CaYaTrace.Assets.cayatrace.ico";
+
+    private static readonly Lazy<System.Drawing.Icon?> Cached = new(() =>
+    {
+        try
         {
-            session,
-            tree = roots,
-            findings = findings.Select(static f => new
-            {
-                risk = f.Risk.ToString(),
-                score = f.Score,
-                category = f.Observation.Category.ToString(),
-                action = f.Observation.Action.ToString(),
-                target = f.Observation.Target,
-                target2 = f.Observation.Target2,
-                oldValue = f.Observation.OldValue,
-                newValue = f.Observation.NewValue,
-                reasons = f.Reasons,
-                seq = f.Observation.Seq,
-                source = f.Observation.Source.ToString(),
-                confidence = f.Observation.Confidence.ToString(),
-            }),
-        }, Json);
+            using Stream? stream = typeof(AppIcon).Assembly.GetManifestResourceStream(Resource);
+            return stream is null ? null : new System.Drawing.Icon(stream);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException)
+        {
+            return null;
+        }
+    }, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    public static System.Drawing.Icon? Load() => Cached.Value;
+}
+
+/// <summary>Resolves the several things an operator might mean by "the session".</summary>
+internal static class SessionPaths
+{
+    public const string DatabaseName = "session.ctdb";
+
+    /// <summary>
+    /// Accepts a database file, a session directory, or a session root, in that order
+    /// of specificity, and returns the database to open.
+    /// </summary>
+    public static string Resolve(string input)
+    {
+        string full = Path.GetFullPath(input);
+        if (File.Exists(full)) return full;
+
+        if (Directory.Exists(full))
+        {
+            string direct = Path.Combine(full, DatabaseName);
+            if (File.Exists(direct)) return direct;
+
+            // A session root: take the most recent session inside it.
+            string? newest = Directory.EnumerateDirectories(full, "session_*")
+                .Select(d => Path.Combine(d, DatabaseName))
+                .Where(File.Exists)
+                .OrderByDescending(File.GetLastWriteTimeUtc)
+                .FirstOrDefault();
+
+            if (newest is not null) return newest;
+        }
+
+        throw new FileNotFoundException($"no CaYaTrace session at {full}", full);
     }
 }

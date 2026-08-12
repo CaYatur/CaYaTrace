@@ -21,7 +21,7 @@ namespace CaYaTrace.App.Modes;
 /// </remarks>
 public static class WorkbenchMode
 {
-    public static int Run(CommandLine cmd)
+    public static int Run(CommandLine cmd, UserSettings settings)
     {
         if (!WebViewRuntime.IsAvailable(out string? version))
         {
@@ -43,7 +43,11 @@ public static class WorkbenchMode
         System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
 
         string? session = cmd.Get("session") ?? cmd.Positional.FirstOrDefault();
-        using var window = new WorkbenchWindow(session);
+
+        // --view opens straight into a section. Useful for a shortcut that always lands
+        // on Capture, and it is what makes the workbench screenshottable without
+        // driving the mouse.
+        using var window = new WorkbenchWindow(session, settings) { InitialView = cmd.Get("view") };
         System.Windows.Forms.Application.Run(window);
         return 0;
     }

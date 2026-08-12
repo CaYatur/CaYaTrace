@@ -17,6 +17,7 @@ public static class Assets
     private const string HtmlResource = "CaYaTrace.Assets.workbench.html";
     private const string CssResource = "CaYaTrace.Assets.theme.css";
     private const string CssPlaceholder = "/*__THEME_CSS__*/";
+    private const string I18nPlaceholder = "/*__I18N__*/";
 
     private static readonly Lazy<string> Document = new(Compose, LazyThreadSafetyMode.ExecutionAndPublication);
 
@@ -31,10 +32,15 @@ public static class Assets
     {
         // Injected before the first script so the page finds data already present and
         // never attempts the WebView2 bridge path.
-        string payload =
-            $"<script>window.__CAYATRACE_DATA__ = {sessionJson};</script>";
+        string payload = $"<script>window.__CAYATRACE_DATA__ = {sessionJson};</script>";
 
-        int marker = Document.Value.IndexOf("<script>", StringComparison.Ordinal);
+        // Anchored on the page's own script element rather than the first "<script>" in
+        // the file, because the i18n block is a script tag too and inserting ahead of it
+        // would put the data before the catalogue it is rendered with.
+        const string anchor = "<script>\n\"use strict\";";
+        int marker = Document.Value.IndexOf(anchor, StringComparison.Ordinal);
+        if (marker < 0) marker = Document.Value.IndexOf("\"use strict\"", StringComparison.Ordinal);
+
         return marker < 0
             ? Document.Value + payload
             : Document.Value.Insert(marker, payload + Environment.NewLine);
@@ -44,7 +50,19 @@ public static class Assets
     {
         string html = Read(HtmlResource);
         string css = Read(CssResource);
-        return html.Replace(CssPlaceholder, css, StringComparison.Ordinal);
+
+        // The catalogue goes in as the content of a JSON script element, which is inert:
+        // the browser does not execute it and does not parse HTML inside it. The one
+        // sequence that would escape that element is a literal closing script tag, which
+        // no string in the catalogue contains — but it is escaped anyway, because the
+        // cost is a Replace and the failure mode is script injection into every report
+        // this tool ever writes.
+        string catalogue = Strings.CatalogueJson
+            .Replace("</script", @"<\/script", StringComparison.OrdinalIgnoreCase);
+
+        return html
+            .Replace(CssPlaceholder, css, StringComparison.Ordinal)
+            .Replace(I18nPlaceholder, catalogue, StringComparison.Ordinal);
     }
 
     private static string Read(string name)

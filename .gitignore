@@ -69,3 +69,8 @@ desktop.ini
 # Scratch
 tmp/
 scratch/
+
+# Local UI previews and exported reports. A report is captured evidence — see the
+# note at the top of this file about why none of it belongs in the repository.
+.preview/
+preview/

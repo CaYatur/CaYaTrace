@@ -49,6 +49,12 @@ public static class Program
         {
             CommandLine parsed = CommandLine.Parse(args);
 
+            // Resolved once, here, so every mode — workbench, CLI output, exported
+            // report — speaks the same language in the same run. An explicit --lang wins
+            // over a remembered preference, which wins over the system UI language.
+            UserSettings settings = UserSettings.Load();
+            Strings.Language = Strings.Resolve(parsed.Get("lang"), settings.Language);
+
             return parsed.Verb switch
             {
                 "trace" => TraceCommand.Run(parsed),
@@ -59,7 +65,7 @@ public static class Program
                 "agent" => AgentCommand.Run(parsed),
                 "version" => PrintVersion(),
                 "help" => CommandLine.PrintUsage(),
-                _ => WorkbenchMode.Run(parsed),
+                _ => WorkbenchMode.Run(parsed, settings),
             };
         }
         catch (CommandLineException ex)
@@ -81,6 +87,7 @@ public static class Program
         Console.WriteLine($"  runtime  {Environment.Version}");
         Console.WriteLine($"  os       {Environment.OSVersion.VersionString}");
         Console.WriteLine($"  elevated {Privilege.IsElevated()}");
+        Console.WriteLine($"  language {Strings.Language}  (available: {string.Join(", ", Strings.Available)})");
         return 0;
     }
 }

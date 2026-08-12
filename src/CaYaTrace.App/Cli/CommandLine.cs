@@ -126,6 +126,10 @@ public sealed class CommandLine
               --reads                Also record read operations (much higher volume)
               --buffer-mb <n>        ETW buffer pool size (default 256)
               --scoped-only          Discard activity outside the target's process tree
+              --packets              Capture packets with the Windows packet monitor,
+                                     converted to pcapng for Wireshark and correlated
+                                     back to processes by 5-tuple
+              --packet-cap-mb <n>    Circular capture size cap (default 512)
 
             REPORT
               --session <dir|file>   Session to render

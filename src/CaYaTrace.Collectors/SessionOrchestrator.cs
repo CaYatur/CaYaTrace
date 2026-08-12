@@ -39,6 +39,12 @@ public sealed class SessionOptions
 
     public NetworkCollectorOptions Network { get; init; } = NetworkCollectorOptions.Default;
 
+    /// <summary>Capture packets with the Windows packet monitor. Off by default.</summary>
+    public bool CapturePackets { get; init; }
+
+    public CaYaTrace.Collectors.Network.PktmonOptions Pktmon { get; init; }
+        = CaYaTrace.Collectors.Network.PktmonOptions.Default;
+
     /// <summary>Take before/after system inventories around the session.</summary>
     public bool CaptureSnapshots { get; init; } = true;
 
@@ -121,6 +127,7 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             Session = session,
             Sink = _sink,
             Store = _store,
+            SessionDirectory = SessionDirectory,
             Processes = new ProcessTable(),
             Flows = new FlowTable(),
             Paths = paths,
@@ -172,6 +179,12 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             // the user-mode name-resolution and HTTP providers cannot share it.
             if (_options.CollectNetworkMetadata)
                 _collectors.Add(new NetworkCollector(_options.Network));
+
+            // Off by default: a full-payload capture on a busy machine reaches
+            // hundreds of megabytes in minutes, and most sessions do not need the
+            // bytes on the wire to answer their question.
+            if (_options.CapturePackets)
+                _collectors.Add(new CaYaTrace.Collectors.Network.PktmonCollector(_options.Pktmon));
         }
 
         foreach (ICollector collector in _collectors)

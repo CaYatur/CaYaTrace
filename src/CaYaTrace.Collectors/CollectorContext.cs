@@ -25,6 +25,13 @@ public sealed class CollectorContext
 
     public required SessionStore Store { get; init; }
 
+    /// <summary>
+    /// Directory holding this session's files. Collectors that produce artifacts
+    /// alongside the database — packet captures, proxy bodies — write here so
+    /// everything travels together as one evidence unit.
+    /// </summary>
+    public required string SessionDirectory { get; init; }
+
     public required ProcessTable Processes { get; init; }
 
     public required FlowTable Flows { get; init; }

@@ -45,6 +45,11 @@ public static class TraceCommand
             Name = cmd.Get("name"),
             CaptureSnapshots = !cmd.Flag("no-snapshots"),
             DropOutOfScope = cmd.Flag("scoped-only"),
+            CapturePackets = cmd.Flag("packets"),
+            Pktmon = new Collectors.Network.PktmonOptions
+            {
+                MaxFileSizeMB = cmd.Int("packet-cap-mb", 512),
+            },
             Kernel = new KernelCollectorOptions
             {
                 BufferSizeMB = cmd.Int("buffer-mb", 256),

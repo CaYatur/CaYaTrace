@@ -90,7 +90,7 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Kaldırma planlayıcı, `.ctpkg` paketleri, kaldırma motoru | ✅ çalışıyor |
 | Komut satırı (`trace`, `report`, `remediate`) | ✅ çalışıyor |
 | Çalışma tezgâhı arayüzü (WebView2 + CaYaDev teması) | 🚧 devam ediyor |
-| Pktmon ile paket yakalama | 📐 tasarlandı |
+| Süreçlere ilişkilendirilmiş Pktmon paket yakalama | ✅ çalışıyor |
 | Tam istek gövdeleri için araya giren proxy (isteğe bağlı) | 📐 tasarlandı |
 | Çoklu VM karşılaştırması (`compare`) ve ölçülmüş yol şablonlama | ✅ çalışıyor |
 | Gerekçeleri görünür risk puanlama | ✅ çalışıyor |

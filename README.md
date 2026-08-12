@@ -87,7 +87,7 @@ This is an early release. What is real today versus designed is tracked honestly
 | Removal planner, `.ctpkg` packages, remediation runner | ✅ working |
 | CLI (`trace`, `report`, `remediate`) | ✅ working |
 | Workbench UI (WebView2 + CaYaDev theme) | 🚧 in progress |
-| Packet capture via Pktmon | 📐 designed |
+| Packet capture via Pktmon, correlated to processes | ✅ working |
 | Intercepting proxy for full request bodies (opt-in) | 📐 designed |
 | Multi-VM comparison (`compare`) with measured path templating | ✅ working |
 | Risk scoring with visible reasons | ✅ working |

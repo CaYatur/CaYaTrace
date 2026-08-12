@@ -68,6 +68,18 @@ public sealed class RemediationRunner
     /// </summary>
     public Func<RemovalItem, FingerprintMatch, string, bool>? ConfirmationHandler { get; init; }
 
+    /// <summary>
+    /// Called as each item is dealt with, before moving to the next.
+    /// </summary>
+    /// <remarks>
+    /// A removal is the one operation here that changes the operator's machine, and it
+    /// used to run with no indication of where it had got to. That matters beyond
+    /// comfort: when something goes wrong partway through, the difference between "it
+    /// failed" and "it failed after moving these eleven files" is the difference between
+    /// a recoverable situation and a guess.
+    /// </remarks>
+    public Action<RemediationProgress>? Progress { get; init; }
+
     public RemediationRunner(string quarantineRoot, bool apply, PathNormalizer? paths = null)
     {
         _paths = paths ?? PathNormalizer.CreateForCurrentMachine();
@@ -93,8 +105,17 @@ public sealed class RemediationRunner
         // Ordering matters for correctness, not just tidiness: a service must be
         // stopped before its binary can be moved, and a directory can only go once
         // its contents have.
-        foreach (RemovalItem item in items.OrderBy(static i => i.Order).ThenByDescending(static i => i.Target.Length))
+        List<RemovalItem> ordered = items
+            .OrderBy(static i => i.Order)
+            .ThenByDescending(static i => i.Target.Length)
+            .ToList();
+
+        int index = 0;
+        foreach (RemovalItem item in ordered)
         {
+            index++;
+            Progress?.Invoke(new RemediationProgress(index, ordered.Count, item.Kind, item.Target, null, null));
+
             ItemResult result;
             try
             {
@@ -104,10 +125,35 @@ public sealed class RemediationRunner
             {
                 result = new ItemResult(item, ItemOutcome.Failed, $"{ex.GetType().Name}: {ex.Message}");
             }
+
             results.Add(result);
+            Progress?.Invoke(new RemediationProgress(
+                index, ordered.Count, item.Kind, item.Target, result.Outcome, result.Detail));
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Disarms whatever would undo this removal, then runs it.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="Execute"/> so the plain path stays plain and so a caller
+    /// can choose to look before acting. The disarming step stops services from restarting
+    /// themselves, clears their autostart, and stops processes running from the paths
+    /// about to be moved — in that order, because any other order lets the thing being
+    /// removed put itself back while the removal is still running.
+    /// </remarks>
+    public (DisarmResult Disarmed, List<ItemResult> Results) ExecuteProtected(IReadOnlyList<RemovalItem> items)
+    {
+        var protection = new SelfProtection(_paths);
+
+        DisarmResult disarmed = _apply
+            ? protection.Disarm(items, message => Progress?.Invoke(
+                new RemediationProgress(0, items.Count, null, message, null, null)))
+            : new DisarmResult(protection.Inspect(items), Array.Empty<string>(), Array.Empty<string>());
+
+        return (disarmed, Execute(items));
     }
 
     private ItemResult Process(RemovalItem item) => item.Kind switch

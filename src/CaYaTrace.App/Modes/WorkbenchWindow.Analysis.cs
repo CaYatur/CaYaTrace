@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Windows.Forms;
 using CaYaTrace.Analysis;
 using CaYaTrace.Analysis.Ai;
+using CaYaTrace.Analysis.Persistence;
 using CaYaTrace.Analysis.Reputation;
 using CaYaTrace.Core.Correlation;
 using CaYaTrace.Core.Graph;
@@ -311,9 +312,15 @@ public sealed partial class WorkbenchWindow
                     // again per item, with no console to ask on, would mean skipping
                     // everything that needed a decision.
                     ConfirmationHandler = static (_, _, _) => true,
+
+                    Progress = PostRemediationProgress,
                 };
 
-                List<ItemResult> results = runner.Execute(chosen);
+                // The protected path, not the plain one. Anything configured to restart
+                // itself is disarmed first — recovery actions cleared, autostart set to
+                // manual, watchdog groups stopped together — because a removal that runs
+                // while its subject is putting itself back looks like it worked.
+                (DisarmResult disarmed, List<ItemResult> results) = runner.ExecuteProtected(chosen);
 
                 int removed = results.Count(static r => r.Outcome == ItemOutcome.Removed);
                 int skipped = results.Count(static r => r.Outcome
@@ -323,14 +330,227 @@ public sealed partial class WorkbenchWindow
                     or ItemOutcome.NotPresent);
                 int failed = results.Count(static r => r.Outcome == ItemOutcome.Failed);
 
+                PostRemediationResult(quarantine, disarmed, results, removed, skipped, failed);
+
                 Toast(Strings.Format("remediate.applied", removed, skipped, failed, quarantine),
                     failed > 0 ? "error" : "ok");
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
             {
+                Post("remediation", new { running = false });
                 Toast(ex.Message, "error");
             }
         });
+    }
+
+    private void PostRemediationProgress(RemediationProgress progress) => Post("remediation", new
+    {
+        running = true,
+        index = progress.Index,
+        total = progress.Total,
+        percent = progress.Percent,
+        kind = progress.Kind?.ToString(),
+        target = progress.Target,
+        preparation = progress.IsPreparation,
+        outcome = progress.Outcome?.ToString(),
+        detail = progress.Detail,
+        finished = progress.Outcome is not null,
+    });
+
+    /// <summary>
+    /// The result of a removal, and what is now sitting in quarantine.
+    /// </summary>
+    /// <remarks>
+    /// The quarantine listing is part of the result rather than a separate screen because
+    /// the decision it invites — keep, put back, or delete for good — is one an operator
+    /// makes while they still remember what they were doing and why.
+    /// </remarks>
+    private void PostRemediationResult(
+        string quarantineRoot,
+        DisarmResult disarmed,
+        List<ItemResult> results,
+        int removed,
+        int skipped,
+        int failed)
+    {
+        var quarantine = new Quarantine(quarantineRoot);
+
+        Post("remediation", new
+        {
+            running = false,
+            complete = true,
+            root = quarantineRoot,
+            removed,
+            skipped,
+            failed,
+            defences = disarmed.Found.Select(static d => new
+            {
+                kind = d.Kind.ToString(),
+                subject = d.Subject,
+                description = d.Description,
+                response = d.Response,
+                disarmed = d.CanDisarm,
+            }).ToList(),
+            actions = disarmed.Actions,
+            blocked = disarmed.Failures,
+            items = results.Select(static r => new
+            {
+                kind = r.Item.Kind.ToString(),
+                target = r.Item.Target,
+                value = r.Item.ValueName,
+                outcome = r.Outcome.ToString(),
+                detail = r.Detail,
+            }).ToList(),
+            held = quarantine.Contents().Select(static q => new
+            {
+                path = q.QuarantinePath,
+                original = q.OriginalPath,
+                size = q.SizeBytes,
+                directory = q.IsDirectory,
+                canRestore = q.CanRestore,
+            }).ToList(),
+        });
+    }
+
+    /// <summary>Carries out what the operator decided about the quarantined files.</summary>
+    /// <remarks>
+    /// Deleting is the only step in this tool that cannot be undone, so it is its own
+    /// intent, taken after the operator has seen the list, and it refuses anything outside
+    /// the quarantine directory regardless of what the journal claims.
+    /// </remarks>
+    private void QuarantineApply(JsonElement payload)
+    {
+        string? root = Str(payload, "root") ?? _quarantineRoot;
+        if (root is null) return;
+
+        QuarantineDisposition disposition = Str(payload, "disposition") switch
+        {
+            "restore" => QuarantineDisposition.Restore,
+            "delete" => QuarantineDisposition.Delete,
+            _ => QuarantineDisposition.Keep,
+        };
+
+        if (disposition == QuarantineDisposition.Keep)
+        {
+            Toast(Strings.T("quarantine.kept"), "ok");
+            return;
+        }
+
+        if (!Privilege.IsElevated())
+        {
+            Toast(Strings.T("error.needs_admin"), "error");
+            return;
+        }
+
+        List<string> only = StringList(payload, "paths");
+
+        _ = Task.Run(() =>
+        {
+            var quarantine = new Quarantine(root);
+            IReadOnlyList<(QuarantinedItem Item, bool Succeeded, string Message)> results =
+                quarantine.Apply(disposition, only.Count > 0 ? only : null, PostRemediationProgress);
+
+            int ok = results.Count(static r => r.Succeeded);
+            int bad = results.Count - ok;
+
+            Post("quarantine", new
+            {
+                disposition = disposition.ToString(),
+                succeeded = ok,
+                failed = bad,
+                held = quarantine.Contents().Select(static q => new
+                {
+                    path = q.QuarantinePath,
+                    original = q.OriginalPath,
+                    size = q.SizeBytes,
+                    directory = q.IsDirectory,
+                    canRestore = q.CanRestore,
+                }).ToList(),
+                results = results.Select(static r => new
+                {
+                    original = r.Item.OriginalPath,
+                    succeeded = r.Succeeded,
+                    message = r.Message,
+                }).ToList(),
+            });
+
+            Toast(Strings.Format("quarantine.done", ok, bad), bad > 0 ? "error" : "ok");
+        });
+    }
+
+    /// <summary>Lists what is currently held, so the view can offer the decision again later.</summary>
+    private void QuarantineList(JsonElement payload)
+    {
+        string? root = Str(payload, "root") ?? _quarantineRoot;
+        if (root is null) return;
+
+        var quarantine = new Quarantine(root);
+        Post("quarantine", new
+        {
+            root,
+            held = quarantine.Contents().Select(static q => new
+            {
+                path = q.QuarantinePath,
+                original = q.OriginalPath,
+                size = q.SizeBytes,
+                directory = q.IsDirectory,
+                canRestore = q.CanRestore,
+            }).ToList(),
+        });
+    }
+
+    /// <summary>
+    /// Loads a removal package and shows what it would do on this machine.
+    /// </summary>
+    /// <remarks>
+    /// A package built on one machine is a set of measured patterns, not a list of literal
+    /// paths, so what it resolves to here is a real question with a real answer — and the
+    /// operator sees that answer, through the same safety policy and the same review, before
+    /// anything is applied. It was previously buildable from the window and appliable only
+    /// from a command line.
+    /// </remarks>
+    private void LoadPackage(JsonElement payload)
+    {
+        string? path = Str(payload, "path");
+
+        if (path is null)
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Title = Strings.T("remediate.open_package"),
+                Filter = "CaYaTrace package (*.ctpkg)|*.ctpkg|All files (*.*)|*.*",
+                CheckFileExists = true,
+            };
+
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            path = dialog.FileName;
+        }
+
+        try
+        {
+            (PackageManifest manifest, List<RemovalItem> items, bool integrityOk) = RemovalPackage.Read(path);
+
+            // Said, not silently tolerated. The hash detects damage, not forgery, and an
+            // operator about to change their machine should know which of those they are
+            // relying on.
+            if (!integrityOk)
+            {
+                Toast(Strings.Format("remediate.package_damaged", Path.GetFileName(path)), "error");
+                return;
+            }
+
+            _planItems = items;
+            _quarantineRoot = Path.Combine(
+                Path.GetDirectoryName(path) ?? Environment.CurrentDirectory, "quarantine");
+
+            PostPlan();
+
+            Toast(Strings.Format("remediate.package_loaded", items.Count, manifest.SubjectName), "ok");
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            Toast(ex.Message, "error");
+        }
     }
 
     // ------------------------------------------------------------------ compare
@@ -633,6 +853,76 @@ public sealed partial class WorkbenchWindow
             Toast(ex.Message, "error");
         }
     }
+
+    /// <summary>
+    /// Answers a question about the loaded session.
+    /// </summary>
+    /// <remarks>
+    /// The answer comes from the session; a model, if one is configured, only rewords it.
+    /// See <see cref="SessionAssistant"/> for why that inversion is the whole design —
+    /// briefly, the models people run locally are small enough to confabulate confidently,
+    /// and an answer about someone's own machine is not a good place for that.
+    /// </remarks>
+    private async Task AskAsync(JsonElement payload)
+    {
+        if (_store is null || _session is null)
+        {
+            Toast(Strings.T("assistant.no_session"), "error");
+            return;
+        }
+
+        string question = Str(payload, "question")?.Trim() ?? string.Empty;
+        if (question.Length == 0) return;
+
+        AnswerDetail detail = Str(payload, "detail") == "detailed" ? AnswerDetail.Detailed : AnswerDetail.Brief;
+        string? model = Str(payload, "model");
+
+        Post("chat", new { busy = true });
+
+        try
+        {
+            List<ProcessNode> processes = _store.LoadProcesses();
+            var byKey = new Dictionary<ProcessKey, ProcessNode>();
+            foreach (ProcessNode node in processes) byKey.TryAdd(node.Key, node);
+
+            IReadOnlyList<PersistenceRecord> persistence =
+                new PersistenceAnalyzer(byKey.GetValueOrDefault).Analyze(_store.Query());
+
+            var questions = new SessionQuestions(_store, _session, persistence, processes);
+
+            using var client = new OllamaClient(ResolveEndpoint(Str(payload, "endpoint")));
+            var assistant = new SessionAssistant(questions, client);
+
+            AssistantReply reply = await assistant
+                .AskAsync(question, detail, Strings.Language, model)
+                .ConfigureAwait(true);
+
+            PostReply(reply);
+        }
+        catch (Exception ex) when (ex is OllamaException or IOException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            Post("chat", new { busy = false });
+            Toast(ex.Message, "error");
+        }
+    }
+
+    private void PostReply(AssistantReply reply) => Post("chat", new
+    {
+        busy = false,
+        question = reply.Question,
+        understood = reply.Understood,
+        kind = reply.Answer.Kind.ToString(),
+
+        // Both are sent. The measured answer is the evidence; the phrased one is a
+        // convenience, and a reader has to be able to see which is which.
+        answer = reply.Answer.Text,
+        phrased = reply.Phrased,
+        model = reply.Model,
+        note = reply.ModelNote,
+        evidence = reply.Answer.Evidence,
+        matches = reply.Answer.MatchCount,
+        empty = reply.Answer.IsEmpty,
+    });
 
     private AiReport? _lastReport;
 

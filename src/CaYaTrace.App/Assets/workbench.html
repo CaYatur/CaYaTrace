@@ -57,6 +57,18 @@
       <h1 id="viewTitle">CaYaTrace</h1>
       <div class="session-chip" id="sessionChip">—</div>
       <div class="topbar-spacer"></div>
+
+      <!--
+        Off by default. The tokenised form is what makes two machines comparable and is
+        the right thing to read in a report; this reveals what a token stands for on the
+        machine the session was recorded on, which is what somebody standing at that
+        machine actually needs.
+      -->
+      <label class="check topbar-check" title="">
+        <input type="checkbox" id="btnRealPaths">
+        <span data-i18n="common.real_paths"></span>
+      </label>
+
       <button class="btn btn-ghost btn-sm live-only" id="btnOpenSession" data-i18n="sessions.open_folder" type="button"></button>
       <button class="btn btn-primary btn-sm" id="btnExport" data-i18n="common.export" type="button"></button>
     </header>
@@ -184,6 +196,30 @@
       </section>
 
       <!-- ------------------------------------------------------------- network -->
+      <!-- --------------------------------------------------------- persistence -->
+      <section class="view" id="view-persistence" hidden>
+        <div class="view-head">
+          <h2 data-i18n="persistence.title"></h2>
+          <p data-i18n="persistence.subtitle"></p>
+        </div>
+        <div id="persistenceBody"></div>
+      </section>
+
+      <!-- ------------------------------------------------------------ timeline -->
+      <section class="view" id="view-timeline" hidden>
+        <div class="view-head">
+          <h2 data-i18n="timeline.title"></h2>
+          <p data-i18n="timeline.subtitle"></p>
+        </div>
+        <div class="filterbar">
+          <input type="search" id="timelineSearch" data-i18n-placeholder="timeline.filter_placeholder"
+                 autocomplete="off" spellcheck="false">
+          <label class="check"><input type="checkbox" id="timelineNotable">
+            <span data-i18n="timeline.notable_only"></span></label>
+        </div>
+        <div id="timelineBody" style="padding:16px 0 40px"></div>
+      </section>
+
       <section class="view" id="view-network" hidden>
         <div class="view-head">
           <h2 data-i18n="network.title"></h2>
@@ -212,6 +248,28 @@
         <div class="view-head">
           <h2 data-i18n="assistant.title"></h2>
           <p data-i18n="assistant.subtitle"></p>
+        </div>
+
+        <div class="card">
+          <h3 data-i18n="chat.title"></h3>
+          <div class="hint" data-i18n="chat.hint"></div>
+
+          <div class="chat-log" id="chatLog"></div>
+
+          <div class="row tight wrap center" style="margin-top:12px">
+            <input type="text" id="chatInput" class="grow" data-i18n-placeholder="chat.placeholder"
+                   autocomplete="off" spellcheck="false">
+            <select id="chatDetail" style="max-width:150px">
+              <option value="brief" data-i18n="chat.brief"></option>
+              <option value="detailed" data-i18n="chat.detailed"></option>
+            </select>
+            <button class="btn btn-primary" id="btnChatSend" data-i18n="chat.ask" type="button"></button>
+          </div>
+
+          <div class="row tight wrap" style="margin-top:10px">
+            <button class="btn btn-ghost btn-small" id="btnChatSummary" data-i18n="chat.summarise" type="button"></button>
+            <div class="chips" id="chatSuggestions"></div>
+          </div>
         </div>
 
         <div class="card">
@@ -264,10 +322,16 @@
         <div class="card">
           <h3 data-i18n="remediate.options"></h3>
           <div id="planOptions"></div>
-          <button class="btn btn-primary" id="btnBuildPlan" data-i18n="remediate.build" type="button" style="margin-top:12px"></button>
+          <div class="row tight wrap" style="margin-top:12px">
+            <button class="btn btn-primary" id="btnBuildPlan" data-i18n="remediate.build" type="button"></button>
+            <button class="btn btn-ghost" id="btnLoadPackage" data-i18n="remediate.open_package" type="button"></button>
+          </div>
+          <div class="hint" data-i18n="remediate.package_hint" style="margin-top:8px"></div>
         </div>
 
+        <div id="remediationProgress"></div>
         <div id="planBody"></div>
+        <div id="quarantineBody"></div>
       </section>
 
       <!-- --------------------------------------------------------------- fleet -->
@@ -348,9 +412,28 @@ const state = {
   session: null,
   counts: {},
   findings: [],
+  persistence: [],
+  timeline: [],
   roots: [],
   network: { requests: [], flows: [], dns: [], tls: [] },
   processes: [],
+
+  /* Conversation view: the reader chooses what to read, not the tool. */
+  timelineQuery: '',
+  timelineNotable: false,
+
+  /*
+   * Tokenised paths are the default and stay the default: they are what makes two
+   * machines comparable. This only reveals what the token stands for on this machine,
+   * which is what someone standing at the machine actually needs.
+   */
+  showRealPaths: false,
+
+  chat: { busy: false, turns: [] },
+  remediation: null,
+  quarantine: null,
+  agent: { state: 'idle', message: '', connected: false },
+  fleetView: 'host',
 
   hidden: new Set(),
   query: '',
@@ -495,10 +578,43 @@ function table(columns, rows, renderRow) {
 
 function cell(text, className) { return el('td', className, text); }
 
-function emptyState(message) {
+function emptyState(message, hint) {
   const host = el('div', 'empty');
   host.appendChild(el('div', null, message));
+  if (hint) host.appendChild(el('div', 'empty-hint', hint));
   return host;
+}
+
+function kv(label, value) {
+  const row = el('div', 'pathline');
+  row.appendChild(el('span', 'pathlabel', label));
+  row.appendChild(el('span', null, value));
+  return row;
+}
+
+/*
+ * Wraps wide content so it scrolls inside its own box.
+ *
+ * Both halves are needed. `overflow-x: auto` alone does nothing when the element is a
+ * grid or flex child, because those default to `min-width: auto` and refuse to shrink
+ * below their content — which is how a long registry path came to push the whole page
+ * sideways and clip the left edge of every card.
+ */
+function wrapScroll(node) {
+  const box = el('div', 'scroll-x');
+  box.appendChild(node);
+  return box;
+}
+
+function confirmThen(key, action) {
+  showModal({
+    title: t(key + '_title'),
+    body: t(key + '_body'),
+    actions: [
+      { label: t('common.cancel') },
+      { label: t('common.continue'), className: 'btn-danger', onClick: action },
+    ],
+  });
 }
 
 /* ============================================================ navigation */
@@ -508,6 +624,8 @@ const NAV = [
   { id: 'capture',   key: 'nav.capture',   live: true,  icon: 'M12 4v16M4 12h16' },
   { id: 'sessions',  key: 'nav.sessions',  live: true,  icon: 'M4 6h16M4 12h16M4 18h16' },
   { id: 'findings',  key: 'nav.findings',  live: false, icon: 'M12 3l8 4v6c0 4-3.5 7-8 8-4.5-1-8-4-8-8V7z' },
+  { id: 'persistence', key: 'nav.persistence', live: false, icon: 'M12 3v9m0 0l-3-3m3 3l3-3M5 15v4h14v-4' },
+  { id: 'timeline',  key: 'nav.timeline',  live: false, icon: 'M4 12h16M7 8v8M12 6v12M17 9v6' },
   { id: 'tree',      key: 'nav.tree',      live: false, icon: 'M12 4v6M6 20v-4M18 20v-4M6 16h12v-6' },
   { id: 'network',   key: 'nav.network',   live: false, icon: 'M12 3a9 9 0 100 18 9 9 0 000-18zM3 12h18M12 3c3 3.5 3 13.5 0 18' },
   { id: 'compare',   key: 'nav.compare',   live: true,  icon: 'M9 4v16M15 4v16M4 9h10M10 15h10' },
@@ -543,11 +661,13 @@ function renderNav() {
 }
 
 function needsSession(id) {
-  return ['overview', 'findings', 'tree', 'network', 'remediate'].includes(id);
+  return ['overview', 'findings', 'persistence', 'timeline', 'tree', 'network', 'remediate'].includes(id);
 }
 
 function navCount(id) {
   if (id === 'findings' && state.findings.length) return formatNumber(state.findings.length);
+  if (id === 'persistence' && state.persistence.length) return formatNumber(state.persistence.length);
+  if (id === 'timeline' && state.timeline.length) return formatNumber(state.timeline.length);
   if (id === 'network') {
     const n = state.network.requests.length + state.network.flows.length;
     return n ? formatNumber(n) : '';
@@ -1690,11 +1810,100 @@ function confirmApply() {
 
 /* ================================================================ fleet */
 
+/*
+ * Two roles, one screen.
+ *
+ * The host half existed and the agent half was command-line only, so a machine could run
+ * a fleet from this window but could only join one from a terminal — on the analysis VM,
+ * which is the machine least likely to have one open.
+ */
 function renderFleet() {
   const host = document.getElementById('fleetBody');
   if (!host) return;
   host.innerHTML = '';
 
+  const roles = el('div', 'tabs');
+  [['host', 'fleet.role_host'], ['agent', 'fleet.role_agent']].forEach(([id, key]) => {
+    const b = el('button', 'tab', t(key));
+    b.type = 'button';
+    b.setAttribute('aria-selected', String(state.fleetView === id));
+    b.onclick = () => { state.fleetView = id; renderFleet(); };
+    roles.appendChild(b);
+  });
+  host.appendChild(roles);
+
+  if (state.fleetView === 'agent') { renderFleetAgent(host); return; }
+
+  renderFleetHost(host);
+}
+
+/*
+ * This machine joining somebody else's fleet.
+ *
+ * The fingerprint is shown as prominently as the connection state, because comparing it
+ * against the host's screen is the only thing standing between a paired agent and a
+ * machine that has agreed to be watched by whoever answered first.
+ */
+function renderFleetAgent(host) {
+  const card = el('div', 'card');
+  card.appendChild(el('h3', null, t('fleet.agent_title')));
+  card.appendChild(el('div', 'hint', t('fleet.agent_hint')));
+
+  const form = el('div', 'row tight wrap center');
+  form.style.marginTop = '12px';
+
+  const address = document.createElement('input');
+  address.type = 'text';
+  address.id = 'agentHost';
+  address.placeholder = '192.168.1.10';
+  address.className = 'grow';
+  address.disabled = state.agent.connected;
+  form.appendChild(address);
+
+  const port = document.createElement('input');
+  port.type = 'number';
+  port.id = 'agentPort';
+  port.value = state.host.fleetPort;
+  port.style.maxWidth = '110px';
+  port.disabled = state.agent.connected;
+  form.appendChild(port);
+
+  const code = document.createElement('input');
+  code.type = 'text';
+  code.id = 'agentCode';
+  code.placeholder = t('fleet.code');
+  code.style.maxWidth = '190px';
+  code.disabled = state.agent.connected;
+  form.appendChild(code);
+
+  const action = el('button', state.agent.connected ? 'btn btn-danger' : 'btn btn-primary',
+    t(state.agent.connected ? 'fleet.leave' : 'fleet.join'));
+  action.type = 'button';
+  action.onclick = () => {
+    if (state.agent.connected) { bridge.send('fleetLeave', {}); return; }
+    bridge.send('fleetJoin', {
+      host: address.value.trim(),
+      port: Number(port.value) || state.host.fleetPort,
+      code: code.value.trim(),
+    });
+  };
+  form.appendChild(action);
+
+  card.appendChild(form);
+
+  const status = el('div', 'agent-status');
+  status.appendChild(el('span', 'tag', t('fleet.agent_state.' + state.agent.state) || state.agent.state));
+  if (state.agent.message) status.appendChild(el('code', 'wrap-any', state.agent.message));
+  card.appendChild(status);
+
+  if (state.agent.state === 'fingerprint' || state.agent.state === 'waiting') {
+    card.appendChild(el('div', 'hint', t('fleet.agent_check_fingerprint')));
+  }
+
+  host.appendChild(card);
+}
+
+function renderFleetHost(host) {
   const fleet = state.fleet || { listening: false, port: state.host.fleetPort, agents: [] };
 
   const card = el('div', 'card');
@@ -1786,26 +1995,20 @@ function renderFleet() {
   if (!agents.length) {
     card2.appendChild(el('div', 'hint', fleet.listening ? t('fleet.waiting') : ''));
   } else {
-    card2.appendChild(table(
-      [t('fleet.agent_col_machine'), t('fleet.agent_col_state'), t('fleet.agent_col_events')],
-      agents,
-      a => {
-        const tr = document.createElement('tr');
-        tr.appendChild(cell(a.machine || a.id, 'mono'));
-        tr.appendChild(cell(t('fleet.state_' + (a.state || 'gone')), 'nowrap'));
-        tr.appendChild(cell(formatNumber(a.events || 0), 'num'));
-        return tr;
-      }));
+    // One panel per machine rather than one table for all of them. A fleet is a handful
+    // of machines that are each doing something different, and a row per machine cannot
+    // carry what the operator needs to decide anything about one of them.
+    agents.forEach(a => card2.appendChild(renderMachine(a)));
 
-    const actions = el('div', 'row tight');
+    const actions = el('div', 'row tight wrap');
     actions.style.marginTop = '12px';
 
-    const start = el('button', 'btn btn-primary', t('fleet.start_collection'));
+    const start = el('button', 'btn btn-primary', t('fleet.start_all'));
     start.type = 'button';
-    start.onclick = () => bridge.send('fleetCollect', { start: true });
+    start.onclick = () => bridge.send('fleetCollect', Object.assign({ start: true }, collectionOptions()));
     actions.appendChild(start);
 
-    const stop = el('button', 'btn btn-ghost', t('fleet.stop_collection'));
+    const stop = el('button', 'btn btn-ghost', t('fleet.stop_all'));
     stop.type = 'button';
     stop.onclick = () => bridge.send('fleetCollect', { start: false });
     actions.appendChild(stop);
@@ -1814,6 +2017,166 @@ function renderFleet() {
 
   card2.appendChild(el('div', 'hint', t('fleet.no_remote_invasive')));
   host.appendChild(card2);
+}
+
+/* Which categories a remote recording collects — the same choices the capture screen offers. */
+const FLEET_CATEGORIES = ['file', 'registry', 'network', 'modules', 'networkMetadata', 'snapshots'];
+
+function collectionOptions() {
+  const options = {};
+  FLEET_CATEGORIES.forEach(id => {
+    const box = document.getElementById('fleetOpt_' + id);
+    options[id] = box ? box.checked : true;
+  });
+  const reads = document.getElementById('fleetOpt_reads');
+  options.reads = reads ? reads.checked : false;
+  return options;
+}
+
+/*
+ * One connected machine: what it is, what it is doing, and what can be done to it.
+ *
+ * The stop controls exist because the alternative, when a machine under observation turns
+ * out to be compromised, is walking to it. They are bounded on the agent side — it refuses
+ * anything the kernel marks critical and re-checks every process id against the live
+ * machine before acting, because the list this is clicked from is seconds old.
+ */
+function renderMachine(a) {
+  const box = el('div', 'machine');
+
+  const head = el('div', 'machine-head');
+  head.appendChild(el('strong', null, a.machine || a.id));
+  head.appendChild(el('span', 'tag', t('fleet.state_' + (a.state || 'gone'))));
+  if (a.virtualMachine) head.appendChild(el('span', 'tag', a.hypervisor || t('fleet.virtual')));
+  if (!a.elevated) head.appendChild(el('span', 'tag tag-warn', t('fleet.not_elevated')));
+  if (a.sessions) head.appendChild(el('span', 'tag', t('fleet.sessions_done') + ' ' + a.sessions));
+  box.appendChild(head);
+
+  box.appendChild(el('div', 'machine-sub', [a.os, a.architecture, a.toolVersion].filter(Boolean).join(' · ')));
+  box.appendChild(el('code', 'wrap-any machine-fp', a.fingerprint || ''));
+
+  if (a.state === 'pending') {
+    const decide = el('div', 'row tight');
+    decide.style.marginTop = '10px';
+
+    const yes = el('button', 'btn btn-primary btn-small', t('fleet.approve'));
+    yes.type = 'button';
+    yes.onclick = () => bridge.send('fleetDecide', { agent: a.id, approve: true });
+    decide.appendChild(yes);
+
+    const no = el('button', 'btn btn-ghost btn-small', t('fleet.reject'));
+    no.type = 'button';
+    no.onclick = () => bridge.send('fleetDecide', { agent: a.id, approve: false });
+    decide.appendChild(no);
+
+    box.appendChild(decide);
+    box.appendChild(el('div', 'hint', t('fleet.check_fingerprint')));
+    return box;
+  }
+
+  const live = a.live;
+  if (live) {
+    const stats = [];
+    stats.push(t('fleet.live_processes') + ' ' + formatNumber(live.processCount || 0));
+    if (live.recording) stats.push(t('fleet.live_recorded') + ' ' + formatNumber(live.recorded || 0));
+    if (live.dropped) stats.push(t('fleet.live_dropped') + ' ' + formatNumber(live.dropped));
+    if (live.memoryTotal) {
+      stats.push(formatBytes(live.memoryUsed) + ' / ' + formatBytes(live.memoryTotal));
+    }
+    box.appendChild(el('div', 'machine-stats', stats.join(' · ')));
+
+    (live.started || []).slice(0, 6).forEach(pr =>
+      box.appendChild(el('div', 'machine-event machine-start', '+ ' + pr.name + ' (' + pr.pid + ')')));
+    (live.exited || []).slice(0, 6).forEach(pr =>
+      box.appendChild(el('div', 'machine-event machine-exit', '− ' + pr.name + ' (' + pr.pid + ')')));
+
+    if (live.processes) box.appendChild(renderRemoteProcesses(a, live.processes));
+  }
+
+  const row = el('div', 'row tight wrap');
+  row.style.marginTop = '10px';
+
+  if (a.state !== 'collecting') {
+    const rec = el('button', 'btn btn-primary btn-small', t('fleet.start_one'));
+    rec.type = 'button';
+    rec.onclick = () => bridge.send('fleetCollect',
+      Object.assign({ start: true, agent: a.id }, collectionOptions()));
+    row.appendChild(rec);
+  } else {
+    const stop = el('button', 'btn btn-ghost btn-small', t('fleet.stop_one'));
+    stop.type = 'button';
+    stop.onclick = () => bridge.send('fleetCollect', { start: false, agent: a.id });
+    row.appendChild(stop);
+  }
+
+  const peek = el('button', 'btn btn-ghost btn-small', t('fleet.processes'));
+  peek.type = 'button';
+  peek.onclick = () => bridge.send('fleetInspect', { agent: a.id, full: true });
+  row.appendChild(peek);
+
+  const sample = el('button', 'btn btn-ghost btn-small', t('fleet.refresh_live'));
+  sample.type = 'button';
+  sample.onclick = () => bridge.send('fleetInspect', { agent: a.id, full: false });
+  row.appendChild(sample);
+
+  box.appendChild(row);
+  return box;
+}
+
+function renderRemoteProcesses(a, processes) {
+  const details = el('details', 'remote-procs');
+  details.open = true;
+  details.appendChild(el('summary', null, t('fleet.processes') + ' (' + processes.length + ')'));
+
+  const tbl = el('table', 'kvtable');
+  processes.slice(0, 400).forEach(pr => {
+    const tr = el('tr');
+
+    const name = el('td', 'kvname');
+    name.appendChild(el('span', null, pr.name));
+    name.appendChild(el('span', 'tl-pid', ' (' + pr.pid + ')'));
+    if (pr.services) name.appendChild(el('div', 'kvwas', pr.services));
+    tr.appendChild(name);
+
+    const info = el('td', 'kvdata');
+    if (pr.path) info.appendChild(el('code', 'wrap-any', pr.path));
+    if (pr.commandLine) info.appendChild(el('div', 'kvwas', pr.commandLine));
+    tr.appendChild(info);
+
+    const act = el('td', 'nowrap');
+    if (pr.critical) {
+      act.appendChild(el('span', 'tag tag-warn', t('fleet.critical')));
+    } else {
+      const stop = el('button', 'btn btn-ghost btn-small', t('fleet.stop_process'));
+      stop.type = 'button';
+      stop.onclick = () => confirmThen('fleet.confirm_stop', () => bridge.send('fleetControl', {
+        agent: a.id, action: 'stop', pid: pr.pid, name: pr.name,
+      }));
+      act.appendChild(stop);
+
+      const tree = el('button', 'btn btn-ghost btn-small', t('fleet.stop_tree'));
+      tree.type = 'button';
+      tree.onclick = () => confirmThen('fleet.confirm_stop', () => bridge.send('fleetControl', {
+        agent: a.id, action: 'stopTree', pid: pr.pid, name: pr.name,
+      }));
+      act.appendChild(tree);
+
+      if (pr.services) {
+        const svc = el('button', 'btn btn-ghost btn-small', t('fleet.stop_service'));
+        svc.type = 'button';
+        svc.onclick = () => confirmThen('fleet.confirm_stop', () => bridge.send('fleetControl', {
+          agent: a.id, action: 'stopService', service: String(pr.services).split(',')[0].trim(),
+        }));
+        act.appendChild(svc);
+      }
+    }
+    tr.appendChild(act);
+
+    tbl.appendChild(tr);
+  });
+
+  details.appendChild(wrapScroll(tbl));
+  return details;
 }
 
 /* =============================================================== export */
@@ -1957,6 +2320,14 @@ function load(data) {
   const firstPopulated = NETWORK_TABS.find(tab => (state.network[tab.id] || []).length);
   if (firstPopulated) state.networkTab = firstPopulated.id;
   state.processes = data.processes || [];
+  state.persistence = data.persistence || [];
+  state.timeline = data.timeline || [];
+
+  // A new session is a new conversation. Carrying answers about the previous one into
+  // this view would be the most confusing possible kind of stale data.
+  state.chat = { busy: false, turns: [] };
+  state.remediation = null;
+  state.quarantine = null;
 
   state.expanded = new Set();
   // Process nodes start open; everything below stays collapsed so an installer that
@@ -1974,6 +2345,430 @@ function load(data) {
     setView('overview');
 }
 
+/* ============================================================ persistence */
+
+/*
+ * The ways the subject arranged to run again, one card per mechanism.
+ *
+ * One card per mechanism rather than one per registry value, because "it installed a
+ * service called X that runs Y as LocalSystem and restarts itself" is the sentence an
+ * analyst needs, and eight rows of DWORDs is not that sentence.
+ */
+function renderPersistence() {
+  const host = document.getElementById('persistenceBody');
+  if (!host) return;
+  host.innerHTML = '';
+
+  if (!state.persistence.length) {
+    host.appendChild(emptyState(t('persistence.none'), t('persistence.none_hint')));
+    return;
+  }
+
+  state.persistence.forEach(record => {
+    const card = el('div', 'card persist');
+
+    const head = el('div', 'persist-head');
+    head.appendChild(el('span', 'risk risk-' + String(record.risk || '').toLowerCase(),
+      t('risk.' + String(record.risk || 'info').toLowerCase())));
+    head.appendChild(el('span', 'persist-kind', t('persistence.kind.' + record.kind) || record.kind));
+    if (record.isNew) head.appendChild(el('span', 'tag', t('persistence.new')));
+    if (record.restartsItself) head.appendChild(el('span', 'tag tag-warn', t('persistence.restarts')));
+    card.appendChild(head);
+
+    const title = el('h3', 'persist-name');
+    title.appendChild(el('span', null, record.identity));
+    if (record.displayName && record.displayName !== record.identity) {
+      title.appendChild(el('span', 'persist-display', ' · ' + record.displayName));
+    }
+    card.appendChild(title);
+
+    if (record.command) card.appendChild(pathLine(t('persistence.runs'), record.command));
+    card.appendChild(pathLine(t('persistence.at'), record.location));
+
+    if (record.installedBy) {
+      card.appendChild(kv(t('persistence.installed_by'), record.installedBy));
+    }
+
+    if ((record.traits || []).length) {
+      const traits = el('ul', 'trait-list');
+      record.traits.forEach(x => traits.appendChild(el('li', null, x)));
+      card.appendChild(traits);
+    }
+
+    if ((record.reasons || []).length) {
+      const reasons = el('ul', 'reason-list');
+      record.reasons.forEach(x => reasons.appendChild(el('li', null, x)));
+      card.appendChild(reasons);
+    }
+
+    if ((record.values || []).length) {
+      const details = el('details', 'persist-values');
+      details.appendChild(el('summary', null, t('persistence.values') + ' (' + record.values.length + ')'));
+
+      const table = el('table', 'kvtable');
+      record.values.forEach(v => {
+        const row = el('tr');
+        row.appendChild(el('td', 'kvname', v.name));
+        const cell = el('td', 'kvdata');
+        cell.appendChild(el('code', 'wrap-any', v.data == null ? '—' : String(v.data)));
+        if (v.previous != null && v.previous !== v.data) {
+          cell.appendChild(el('div', 'kvwas', t('persistence.was') + ' ' + v.previous));
+        }
+        row.appendChild(cell);
+        table.appendChild(row);
+      });
+
+      details.appendChild(wrapScroll(table));
+      card.appendChild(details);
+    }
+
+    host.appendChild(card);
+  });
+}
+
+/*
+ * A path, shown tokenised by default with the real one available.
+ *
+ * The token is what makes a finding portable between machines and it stays the default.
+ * But an operator standing at the machine wants to know where the file actually is, and
+ * making them expand %WINDIR% in their head is a small tax charged every single time.
+ */
+function pathLine(label, value) {
+  const row = el('div', 'pathline');
+  row.appendChild(el('span', 'pathlabel', label));
+
+  const shown = state.showRealPaths ? expandTokens(value) : value;
+  const code = el('code', 'wrap-any', shown);
+  if (shown !== value) code.title = value;
+  row.appendChild(code);
+
+  return row;
+}
+
+/*
+ * Expands %WINDIR% and friends using the map recorded with the session.
+ *
+ * From the session's own machine profile rather than from this machine: a report is
+ * frequently read somewhere other than where it was recorded, and expanding a token
+ * against the reader's machine would quietly produce a path that never existed.
+ */
+function expandTokens(value) {
+  if (!value) return value;
+
+  const folders = state.session ? (p(state.session, 'Machine') || {}) : {};
+  const map = p(folders, 'KnownFolders') || {};
+
+  let out = value;
+  Object.keys(map).forEach(token => {
+    if (!map[token]) return;
+    if (out.toUpperCase().startsWith(token.toUpperCase())) {
+      out = map[token] + out.slice(token.length);
+    }
+  });
+  return out;
+}
+
+/* =============================================================== timeline */
+
+/*
+ * What ran, in order, with what each one touched.
+ *
+ * Deliberately silent about who terminated whom: Windows does not report it without a
+ * kernel driver, and inventing an answer from coincidence in timing is the kind of
+ * confident wrong attribution this tool refuses everywhere else.
+ */
+function renderTimeline() {
+  const host = document.getElementById('timelineBody');
+  if (!host) return;
+  host.innerHTML = '';
+
+  const q = state.timelineQuery.trim().toLowerCase();
+  const rows = state.timeline.filter(e => {
+    if (state.timelineNotable && !(e.notes || []).length) return false;
+    if (!q) return true;
+    return (e.name || '').toLowerCase().includes(q)
+        || (e.path || '').toLowerCase().includes(q)
+        || (e.commandLine || '').toLowerCase().includes(q);
+  });
+
+  if (!rows.length) {
+    host.appendChild(emptyState(t('timeline.none'), t('timeline.none_hint')));
+    return;
+  }
+
+  rows.forEach(entry => {
+    const row = el('div', 'tl-row');
+
+    const when = el('div', 'tl-when');
+    when.appendChild(el('div', 'tl-time', formatClock(entry.started)));
+    when.appendChild(el('div', 'tl-life',
+      entry.seconds == null ? t('timeline.running') : formatDuration(entry.seconds)));
+    row.appendChild(when);
+
+    const body = el('div', 'tl-body');
+    body.style.paddingLeft = Math.min(entry.depth || 0, 6) * 14 + 'px';
+
+    const head = el('div', 'tl-head');
+    head.appendChild(el('strong', null, entry.name));
+    head.appendChild(el('span', 'tl-pid', '(' + entry.pid + ')'));
+    if (entry.elevated) head.appendChild(el('span', 'tag', t('timeline.elevated')));
+    if (entry.signature === 'Unsigned') head.appendChild(el('span', 'tag tag-warn', t('timeline.unsigned')));
+    body.appendChild(head);
+
+    if (entry.path) body.appendChild(pathLine('', entry.path));
+    if (entry.commandLine) body.appendChild(el('code', 'wrap-any tl-cmd', entry.commandLine));
+
+    const counters = [];
+    if (entry.children) counters.push(t('timeline.children') + ' ' + entry.children);
+    if (entry.files) counters.push(t('timeline.files') + ' ' + formatNumber(entry.files));
+    if (entry.registry) counters.push(t('timeline.registry') + ' ' + formatNumber(entry.registry));
+    if (entry.connections) counters.push(t('timeline.connections') + ' ' + entry.connections);
+    if (entry.modules) counters.push(t('timeline.modules') + ' ' + entry.modules);
+    if (counters.length) body.appendChild(el('div', 'tl-counters', counters.join(' · ')));
+
+    (entry.notes || []).forEach(note => body.appendChild(el('div', 'tl-note', note)));
+    (entry.installed || []).forEach(x => body.appendChild(el('div', 'tl-note tl-persist', x)));
+
+    row.appendChild(body);
+    host.appendChild(row);
+  });
+}
+
+function formatDuration(seconds) {
+  if (seconds == null) return '';
+  if (seconds < 1) return (seconds * 1000).toFixed(0) + ' ms';
+  if (seconds < 90) return seconds.toFixed(1) + ' s';
+  return (seconds / 60).toFixed(1) + ' min';
+}
+
+function formatClock(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  return isNaN(d) ? '' : d.toLocaleTimeString();
+}
+
+/* =================================================================== chat */
+
+const CHAT_SUGGESTIONS = [
+  'chat.q.persistence', 'chat.q.services', 'chat.q.tasks',
+  'chat.q.network', 'chat.q.listeners', 'chat.q.files', 'chat.q.processes',
+];
+
+/*
+ * The conversation, with what was measured kept visibly separate from what a model said.
+ *
+ * Both are shown when a model contributed. A reader has to be able to tell which sentence
+ * came from the session and which came from a language model, because only one of them is
+ * evidence — and the models people run locally are small enough that the distinction is
+ * not academic.
+ */
+function renderChat() {
+  const log = document.getElementById('chatLog');
+  if (!log) return;
+
+  log.innerHTML = '';
+
+  if (!state.chat.turns.length) {
+    log.appendChild(el('div', 'chat-empty', t('chat.empty')));
+  }
+
+  state.chat.turns.forEach(turn => {
+    log.appendChild(el('div', 'chat-q', turn.question));
+
+    const a = el('div', 'chat-a');
+
+    if (turn.phrased) {
+      a.appendChild(el('div', 'chat-phrased', turn.phrased));
+      const measured = el('details', 'chat-measured');
+      measured.appendChild(el('summary', null, t('chat.measured')));
+      measured.appendChild(el('div', 'chat-answer', turn.answer));
+      appendEvidence(measured, turn.evidence);
+      a.appendChild(measured);
+    } else {
+      a.appendChild(el('div', 'chat-answer', turn.answer));
+      appendEvidence(a, turn.evidence);
+    }
+
+    if (turn.note) a.appendChild(el('div', 'chat-note', turn.note));
+    if (turn.model && turn.phrased) a.appendChild(el('div', 'chat-note', t('chat.by_model') + ' ' + turn.model));
+
+    log.appendChild(a);
+  });
+
+  if (state.chat.busy) log.appendChild(el('div', 'chat-busy', t('chat.thinking')));
+  log.scrollTop = log.scrollHeight;
+
+  const chips = document.getElementById('chatSuggestions');
+  if (chips && !chips.childElementCount) {
+    CHAT_SUGGESTIONS.forEach(key => {
+      const b = el('button', 'chip', t(key));
+      b.type = 'button';
+      b.onclick = () => askChat(t(key));
+      chips.appendChild(b);
+    });
+  }
+}
+
+function appendEvidence(host, evidence) {
+  if (!evidence || !evidence.length) return;
+  const pre = el('pre', 'chat-evidence wrap-any');
+  pre.textContent = evidence.join('\n');
+  host.appendChild(wrapScroll(pre));
+}
+
+function askChat(question) {
+  if (!question || state.chat.busy) return;
+
+  state.chat.busy = true;
+  state.chat.turns.push({ question, answer: '', evidence: [] });
+  renderChat();
+
+  bridge.send('ask', {
+    question,
+    detail: (document.getElementById('chatDetail') || {}).value || 'brief',
+    model: (document.getElementById('aiModel') || {}).value || '',
+    endpoint: (document.getElementById('ollamaEndpoint') || {}).value || '',
+  });
+}
+
+/* ========================================================== remediation */
+
+/*
+ * Where a removal has got to, while it is happening.
+ *
+ * It used to run with no indication at all. That matters beyond comfort: when something
+ * fails partway through, "it failed after moving these eleven files" is a recoverable
+ * situation and "it failed" is a guess.
+ */
+function renderRemediation() {
+  const host = document.getElementById('remediationProgress');
+  if (!host) return;
+  host.innerHTML = '';
+
+  const r = state.remediation;
+  if (!r) return;
+
+  const card = el('div', 'card');
+
+  if (r.running) {
+    card.appendChild(el('h3', null, t('remediate.running')));
+
+    const bar = el('div', 'progress');
+    const fill = el('div', 'progress-fill');
+    fill.style.width = (r.percent || 0) + '%';
+    bar.appendChild(fill);
+    card.appendChild(bar);
+
+    card.appendChild(el('div', 'progress-label',
+      r.preparation
+        ? r.target
+        : `${r.index || 0} / ${r.total || 0} · ${r.target || ''}`));
+
+    if (r.detail) card.appendChild(el('div', 'hint', r.detail));
+    host.appendChild(card);
+    return;
+  }
+
+  if (!r.complete) return;
+
+  card.appendChild(el('h3', null, t('remediate.result')));
+  card.appendChild(el('div', 'summary-row',
+    `${t('remediate.removed')} ${r.removed} · ${t('remediate.skipped')} ${r.skipped} · ${t('remediate.failed')} ${r.failed}`));
+
+  if ((r.defences || []).length) {
+    const box = el('div', 'defence-box');
+    box.appendChild(el('h4', null, t('remediate.defences')));
+    r.defences.forEach(d => {
+      const line = el('div', d.disarmed ? 'defence' : 'defence defence-blocked');
+      line.appendChild(el('div', 'defence-what', d.description));
+      line.appendChild(el('div', 'defence-response', d.response));
+      box.appendChild(line);
+    });
+    card.appendChild(box);
+  }
+
+  if ((r.blocked || []).length) {
+    const box = el('div', 'defence-box defence-blocked');
+    box.appendChild(el('h4', null, t('remediate.blocked')));
+    r.blocked.forEach(x => box.appendChild(el('div', 'defence-what', x)));
+    card.appendChild(box);
+  }
+
+  if ((r.items || []).length) {
+    const details = el('details');
+    details.appendChild(el('summary', null, t('remediate.item_log') + ' (' + r.items.length + ')'));
+    const table = el('table', 'kvtable');
+    r.items.forEach(i => {
+      const row = el('tr');
+      row.appendChild(el('td', 'kvname', i.outcome));
+      const cell = el('td', 'kvdata');
+      cell.appendChild(el('code', 'wrap-any', i.target + (i.value ? '::' + i.value : '')));
+      if (i.detail) cell.appendChild(el('div', 'kvwas', i.detail));
+      row.appendChild(cell);
+      table.appendChild(row);
+    });
+    details.appendChild(wrapScroll(table));
+    card.appendChild(details);
+  }
+
+  host.appendChild(card);
+}
+
+/*
+ * What is being held, and the decision about it.
+ *
+ * Deleting is the only irreversible operation in this tool, so it is offered here — after
+ * the operator can see exactly what is on the list — rather than as part of the removal.
+ */
+function renderQuarantine() {
+  const host = document.getElementById('quarantineBody');
+  if (!host) return;
+  host.innerHTML = '';
+
+  const q = state.quarantine;
+  const held = q && q.held ? q.held : (state.remediation && state.remediation.held) || [];
+  if (!held.length) return;
+
+  const card = el('div', 'card');
+  card.appendChild(el('h3', null, t('quarantine.title')));
+  card.appendChild(el('div', 'hint', t('quarantine.hint')));
+
+  const table = el('table', 'kvtable');
+  held.forEach(item => {
+    const row = el('tr');
+    row.appendChild(el('td', 'kvname', item.directory ? t('quarantine.folder') : t('quarantine.file')));
+    const cell = el('td', 'kvdata');
+    cell.appendChild(el('code', 'wrap-any', item.original));
+    if (!item.canRestore) cell.appendChild(el('div', 'kvwas', t('quarantine.occupied')));
+    row.appendChild(cell);
+    table.appendChild(row);
+  });
+  card.appendChild(wrapScroll(table));
+
+  const actions = el('div', 'row tight wrap');
+  actions.style.marginTop = '14px';
+
+  const keep = el('button', 'btn btn-ghost', t('quarantine.keep'));
+  keep.type = 'button';
+  keep.onclick = () => bridge.send('quarantineApply', { disposition: 'keep', root: (q && q.root) || null });
+  actions.appendChild(keep);
+
+  const restore = el('button', 'btn btn-ghost', t('quarantine.restore'));
+  restore.type = 'button';
+  restore.onclick = () => confirmThen('quarantine.confirm_restore',
+    () => bridge.send('quarantineApply', { disposition: 'restore', root: (q && q.root) || null }));
+  actions.appendChild(restore);
+
+  const del = el('button', 'btn btn-danger', t('quarantine.delete'));
+  del.type = 'button';
+  del.onclick = () => confirmThen('quarantine.confirm_delete',
+    () => bridge.send('quarantineApply', { disposition: 'delete', root: (q && q.root) || null }));
+  actions.appendChild(del);
+
+  card.appendChild(actions);
+  host.appendChild(card);
+}
+
 function renderAll() {
   renderBanners();
   renderNav();
@@ -1981,15 +2776,20 @@ function renderAll() {
   renderOverview();
   renderChips();
   renderFindings();
+  renderPersistence();
+  renderTimeline();
   renderTree();
   renderNetwork();
   if (bridge.live) {
     renderCapture();
     renderSessions();
     renderAi();
+    renderChat();
     renderCompare();
     renderPlanOptions();
     renderPlan();
+    renderRemediation();
+    renderQuarantine();
     renderFleet();
   }
 }
@@ -2078,6 +2878,36 @@ function wire() {
     PLAN_OPTIONS.forEach(o => { options[o.id] = document.getElementById('plan_' + o.id).checked; });
     bridge.send('buildPlan', options);
   };
+
+  document.getElementById('btnLoadPackage').onclick = () => bridge.send('loadPackage', {});
+
+  const chatInput = document.getElementById('chatInput');
+  document.getElementById('btnChatSend').onclick = () => {
+    askChat(chatInput.value.trim());
+    chatInput.value = '';
+  };
+  chatInput.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    askChat(chatInput.value.trim());
+    chatInput.value = '';
+  });
+
+  document.getElementById('btnChatSummary').onclick = () => askChat(t('chat.q.summary'));
+
+  document.getElementById('timelineSearch').addEventListener('input', e => {
+    state.timelineQuery = e.target.value;
+    renderTimeline();
+  });
+
+  document.getElementById('timelineNotable').addEventListener('change', e => {
+    state.timelineNotable = e.target.checked;
+    renderTimeline();
+  });
+
+  document.getElementById('btnRealPaths').addEventListener('change', e => {
+    state.showRealPaths = e.target.checked;
+    renderAll();
+  });
 }
 
 /* ============================================================ messages */
@@ -2144,6 +2974,47 @@ function wireBridge() {
   bridge.on('compare', payload => { state.compare.result = payload; renderCompare(); });
   bridge.on('plan', payload => { state.plan = payload; renderPlan(); });
   bridge.on('fleet', payload => { state.fleet = payload; renderFleet(); });
+
+  bridge.on('fleetAgent', payload => {
+    state.agent = Object.assign(state.agent, payload);
+    renderFleet();
+  });
+
+  bridge.on('chat', payload => {
+    state.chat.busy = !!payload.busy;
+
+    if (!payload.busy && payload.question !== undefined) {
+      // The placeholder turn pushed when the question was sent, now filled in.
+      const turn = state.chat.turns[state.chat.turns.length - 1];
+      if (turn && !turn.answer) {
+        Object.assign(turn, {
+          answer: payload.answer || '',
+          phrased: payload.phrased || null,
+          evidence: payload.evidence || [],
+          note: payload.note || null,
+          model: payload.model || null,
+          empty: !!payload.empty,
+        });
+      }
+    }
+
+    renderChat();
+  });
+
+  bridge.on('remediation', payload => {
+    state.remediation = payload;
+    renderRemediation();
+    if (payload.held) renderQuarantine();
+  });
+
+  bridge.on('quarantine', payload => {
+    state.quarantine = payload;
+    renderQuarantine();
+    if (payload.results) {
+      const failed = (payload.results || []).filter(r => !r.succeeded);
+      failed.forEach(r => toast(r.original + ': ' + r.message, 'error'));
+    }
+  });
 
   bridge.on('toast', payload => toast(payload.text || '', payload.kind));
 

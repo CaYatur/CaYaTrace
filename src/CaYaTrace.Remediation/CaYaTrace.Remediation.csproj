@@ -13,6 +13,14 @@
   <ItemGroup>
     <ProjectReference Include="..\CaYaTrace.Core\CaYaTrace.Core.csproj" />
     <ProjectReference Include="..\CaYaTrace.Analysis\CaYaTrace.Analysis.csproj" />
+
+    <!--
+      For the live process table and the stop operations. A removal has to be able to
+      see what is running from the paths it is about to move and stop it in the right
+      order, and that is the same view the fleet's live process list is built on —
+      duplicating it here would mean two answers to "is this safe to stop".
+    -->
+    <ProjectReference Include="..\CaYaTrace.Collectors\CaYaTrace.Collectors.csproj" />
   </ItemGroup>
 
 </Project>

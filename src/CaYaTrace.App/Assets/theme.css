@@ -296,9 +296,18 @@ body::before {
 
 .views { position: relative; min-height: 0; overflow: hidden; }
 
+/*
+ * Vertical only.
+ *
+ * With `overflow: auto` a single unbreakable token — a registry path, a URL, a hash —
+ * makes the whole page scrollable sideways, and because the rail is fixed the result is
+ * every card clipped along its left edge with no indication why. Wide content is given
+ * its own scrolling box (see .scroll-x) rather than being allowed to move the page.
+ */
 .view {
   height: 100%;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px 24px 48px;
 }
 
@@ -1061,3 +1070,140 @@ table.data td.wide { max-width: 520px; }
   .panes { grid-template-columns: minmax(0, 1fr); }
   .detail-pane { display: none; }
 }
+
+/* ================================================== containment for wide values
+
+   A path, a registry key or a command line is one unbreakable token as far as layout is
+   concerned. Two rules keep one from moving the page:
+
+     * `min-width: 0` on anything that is a flex or grid child. Those default to
+       `min-width: auto`, which means "never shrink below my content" — so a long value
+       widens its card, which widens the view, which scrolls the page sideways. This is
+       what clipped the left edge of every card in a reported screenshot, and no amount of
+       wrapping fixes it because the element refuses to be narrow enough to wrap.
+
+     * a scrolling box of its own for content that genuinely cannot wrap, such as a table.
+*/
+
+.card, .view-head, .row > *, .list-item, .machine { min-width: 0; }
+
+.scroll-x {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+}
+
+.wrap-any {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+  max-width: 100%;
+  display: block;
+}
+
+.empty-hint { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+
+.topbar-check { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+
+/* ---------------------------------------------------------------- persistence */
+
+.persist-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.persist-kind { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+.persist-name { margin: 0 0 10px; font-size: 15px; font-weight: 700; }
+.persist-display { font-weight: 400; color: var(--text-muted); }
+
+.pathline { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; min-width: 0; }
+.pathlabel { flex: 0 0 auto; font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.pathline code { flex: 1 1 auto; min-width: 0; font-size: 12px; }
+
+.trait-list, .reason-list { margin: 10px 0 0; padding-left: 18px; font-size: 13px; }
+.trait-list li { color: var(--text-body); }
+.reason-list li { color: var(--text-muted); }
+
+.persist-values { margin-top: 12px; }
+.persist-values summary { cursor: pointer; font-size: 12px; color: var(--text-muted); }
+
+.kvtable { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.kvtable td { padding: 5px 10px 5px 0; vertical-align: top; border-bottom: 1px solid var(--border-color); }
+.kvname { white-space: nowrap; color: var(--text-muted); font-weight: 600; }
+.kvdata { width: 100%; min-width: 0; }
+.kvwas { margin-top: 3px; font-size: 11px; color: var(--text-muted); }
+
+.tag { font-size: 10px; padding: 2px 7px; border-radius: 999px; background: var(--bg-light); color: var(--text-muted); white-space: nowrap; }
+.tag-warn { background: rgba(240, 160, 60, 0.16); color: #f0a03c; }
+
+/* ------------------------------------------------------------------ timeline */
+
+.tl-row { display: flex; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--border-color); min-width: 0; }
+.tl-when { flex: 0 0 96px; text-align: right; }
+.tl-time { font-size: 12px; font-variant-numeric: tabular-nums; }
+.tl-life { font-size: 11px; color: var(--text-muted); }
+.tl-body { flex: 1 1 auto; min-width: 0; }
+.tl-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tl-pid { font-size: 11px; color: var(--text-muted); }
+.tl-cmd { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.tl-counters { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
+.tl-note { font-size: 12px; margin-top: 4px; color: #f0a03c; }
+.tl-persist { color: var(--cat-service); }
+
+/* ---------------------------------------------------------------------- chat */
+
+.chat-log {
+  max-height: 460px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin-top: 12px;
+  padding-right: 4px;
+}
+
+.chat-empty { font-size: 13px; color: var(--text-muted); padding: 18px 0; }
+.chat-q { font-weight: 600; font-size: 13px; margin: 14px 0 6px; }
+.chat-a { border-left: 2px solid var(--border-color); padding-left: 12px; }
+.chat-phrased { font-size: 13px; line-height: 1.55; }
+.chat-answer { font-size: 13px; line-height: 1.5; }
+.chat-measured { margin-top: 8px; }
+.chat-measured summary { cursor: pointer; font-size: 11px; color: var(--text-muted); }
+.chat-evidence { font-size: 11px; margin: 8px 0 0; padding: 10px; background: var(--bg-dark); border-radius: 6px; }
+.chat-note { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.chat-busy { font-size: 12px; color: var(--text-muted); padding: 10px 0; }
+
+/* --------------------------------------------------------------- remediation */
+
+.progress { height: 6px; background: var(--bg-dark); border-radius: 999px; overflow: hidden; margin: 12px 0 8px; }
+.progress-fill { height: 100%; background: var(--accent); transition: width 0.2s ease; }
+.progress-label { font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+
+.summary-row { font-size: 13px; margin: 8px 0 12px; }
+
+.defence-box { margin-top: 12px; padding: 12px; background: var(--bg-dark); border-radius: 8px; }
+.defence-box h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.defence { padding: 6px 0; border-bottom: 1px solid var(--border-color); }
+.defence:last-child { border-bottom: none; }
+.defence-what { font-size: 12px; overflow-wrap: anywhere; }
+.defence-response { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.defence-blocked .defence-what { color: #f0a03c; }
+
+/* --------------------------------------------------------------------- fleet */
+
+.machine {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 14px;
+  margin-top: 12px;
+  background: var(--bg-dark);
+}
+
+.machine-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.machine-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.machine-fp { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.machine-stats { font-size: 12px; margin-top: 10px; }
+.machine-event { font-size: 11px; font-family: var(--mono); margin-top: 2px; }
+.machine-start { color: var(--cat-process); }
+.machine-exit { color: var(--text-muted); }
+.remote-procs { margin-top: 10px; }
+.remote-procs summary { cursor: pointer; font-size: 12px; color: var(--text-muted); }
+
+.agent-status { display: flex; gap: 10px; align-items: baseline; margin-top: 12px; flex-wrap: wrap; min-width: 0; }
+.agent-status code { font-size: 11px; min-width: 0; }
+
+.btn-small { padding: 3px 9px; font-size: 11px; }

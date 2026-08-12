@@ -49,6 +49,21 @@ public sealed class StringCatalogueTests
             .ToDictionary(static p => p.Name, static p => p.Value.GetString() ?? string.Empty);
     }
 
+    /// <summary>The shipped page, read from source for the same reason the catalogue is.</summary>
+    private static string Markup()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "CaYaTrace.sln")))
+            directory = directory.Parent;
+
+        Assert.NotNull(directory);
+
+        string path = Path.Combine(directory!.FullName, "src", "CaYaTrace.App", "Assets", "workbench.html");
+        Assert.True(File.Exists(path), $"workbench markup not found at {path}");
+
+        return File.ReadAllText(path);
+    }
+
     private static IReadOnlyList<string> Languages() =>
         Catalogue.Value.RootElement.EnumerateObject()
             .Where(static p => !p.Name.StartsWith('_'))
@@ -119,6 +134,61 @@ public sealed class StringCatalogueTests
                     $"got {{{string.Join(",", actual.Order())}}}");
             }
         }
+    }
+
+    /// <summary>
+    /// Every key the page asks for exists.
+    /// </summary>
+    /// <remarks>
+    /// A missing key does not throw and does not log — it renders as the key itself, so
+    /// the failure looks like a design decision. "persistence.title" as a heading is the
+    /// sort of thing that ships because everyone who saw it assumed someone else knew
+    /// what it meant.
+    /// </remarks>
+    [Fact]
+    public void EveryKeyThePageAsksForExists()
+    {
+        Dictionary<string, string> english = Table("en");
+
+        var missing = new List<string>();
+        foreach (Match match in Regex.Matches(Markup(), @"data-i18n(?:-placeholder)?=""([^""]+)"""))
+        {
+            string key = match.Groups[1].Value;
+            if (key.Length > 0 && !english.ContainsKey(key)) missing.Add(key);
+        }
+
+        Assert.True(missing.Count == 0,
+            $"the page asks for {missing.Count} key(s) the catalogue does not have: "
+            + string.Join(", ", missing.Distinct().Order()));
+    }
+
+    /// <summary>
+    /// Every key the script looks up exists too.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately limited to the literal <c>t('…')</c> calls. Keys built by
+    /// concatenation — a risk level, a persistence kind, an agent state — cannot be
+    /// checked this way, and pretending otherwise by matching loosely would produce a
+    /// test that fails on strings that are fine.
+    /// </remarks>
+    [Fact]
+    public void EveryLiteralLookupInTheScriptExists()
+    {
+        Dictionary<string, string> english = Table("en");
+
+        var missing = new List<string>();
+        foreach (Match match in Regex.Matches(Markup(), @"\bt\('([a-z][a-z0-9_.]*)'\s*[,)]"))
+        {
+            string key = match.Groups[1].Value;
+
+            // A key with no dot is a variable name that happened to match, not a key.
+            if (!key.Contains('.', StringComparison.Ordinal)) continue;
+            if (!english.ContainsKey(key)) missing.Add(key);
+        }
+
+        Assert.True(missing.Count == 0,
+            $"the script looks up {missing.Distinct().Count()} key(s) the catalogue does not have: "
+            + string.Join(", ", missing.Distinct().Order()));
     }
 
     [Fact]

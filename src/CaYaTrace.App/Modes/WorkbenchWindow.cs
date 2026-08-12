@@ -253,10 +253,14 @@ public sealed partial class WorkbenchWindow : Form
             case "buildPlan": BuildPlan(payload); break;
             case "exportPackage": ExportPackage(payload); break;
             case "applyPlan": ApplyPlan(payload); break;
+            case "loadPackage": LoadPackage(payload); break;
+            case "quarantineList": QuarantineList(payload); break;
+            case "quarantineApply": QuarantineApply(payload); break;
 
             case "aiStatus": _ = AiStatusAsync(Str(payload, "endpoint")); break;
             case "aiProbe": _ = AiProbeAsync(Str(payload, "endpoint")); break;
             case "aiExplain": _ = AiExplainAsync(Str(payload, "endpoint"), Str(payload, "model")); break;
+            case "ask": _ = AskAsync(payload); break;
             case "vtLookup": _ = VirusTotalAsync(Str(payload, "key")); break;
 
             case "compareRun": CompareRun(payload); break;

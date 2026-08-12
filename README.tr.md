@@ -93,6 +93,7 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Süreçlere ilişkilendirilmiş Pktmon paket yakalama | ✅ çalışıyor |
 | Tam istek gövdeleri için araya giren proxy (isteğe bağlı) | ✅ çalışıyor |
 | Çoklu VM karşılaştırması (`compare`) ve ölçülmüş yol şablonlama | ✅ çalışıyor |
+| Filo aktarımı: eşleştirilmiş, şifreli host ↔ ajan kanalı | ✅ çalışıyor |
 | Gerekçeleri görünür risk puanlama | ✅ çalışıyor |
 | Model yeterlilik testli Ollama entegrasyonu | ✅ çalışıyor |
 | VirusTotal itibar sorgusu (hash ile, asla yükleme yapmaz) | ✅ çalışıyor |

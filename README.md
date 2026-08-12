@@ -90,6 +90,7 @@ This is an early release. What is real today versus designed is tracked honestly
 | Packet capture via Pktmon, correlated to processes | ✅ working |
 | Intercepting proxy for full request bodies (opt-in) | ✅ working |
 | Multi-VM comparison (`compare`) with measured path templating | ✅ working |
+| Fleet transport: paired, encrypted host ↔ agent channel | ✅ working |
 | Risk scoring with visible reasons | ✅ working |
 | Ollama integration with model capability testing | ✅ working |
 | VirusTotal reputation (hash lookup, never uploads) | ✅ working |

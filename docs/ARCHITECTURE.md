@@ -261,10 +261,22 @@ Transport requirements, deliberately not stubbed with something weaker in the me
 - The agent stays **inert until an approved host connects**. Launching it does not start
   collection or open a channel.
 - Enrollment is by one-time pairing code; the host approves each agent explicitly.
-- The channel is authenticated and encrypted at the application layer (X25519 key agreement,
-  ChaCha20-Poly1305 framing) rather than relying on TLS, because a lab network frequently has
-  no usable PKI and self-signed TLS between VMs adds trust-store changes on machines that are
-  meant to be disposable.
+- The channel is authenticated and encrypted at the application layer rather than relying on
+  TLS, because a lab network frequently has no usable PKI, and self-signed TLS between VMs
+  means either disabling verification — which is not security, only its appearance — or adding
+  trust-store changes to machines that are meant to be disposable.
+- Ephemeral **ECDH on P-256** for forward secrecy, HKDF-SHA256 for directional keys, and
+  **ChaCha20-Poly1305** for frames, falling back to AES-GCM where the platform lacks it. The
+  pairing code is mixed into key derivation and confirmed over the transcript, so a party
+  that does not know it derives different keys and the handshake fails — that is what stops
+  anything on the network standing in the middle.
+- P-256 rather than X25519 as originally specified: X25519 is not reliably reachable through
+  Windows CNG on .NET 8. Measured, not assumed. The security argument is unaffected.
+- Each direction has its own key and counter, and the channel fails closed rather than
+  wrapping a nonce.
+- The host cannot order a remote machine to capture packets or intercept HTTPS. Both change
+  the machine they run on, and a host able to trigger them remotely would turn a paired agent
+  into a remote administration channel.
 
 A half-built remote-collection channel on an analysis network is a liability, not a feature.
 

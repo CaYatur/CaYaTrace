@@ -128,6 +128,44 @@ public sealed class SafetyPolicy
 
     public SafetyPolicy(PathNormalizer paths) => _paths = paths;
 
+    /// <summary>
+    /// The verdict for a planned removal, dispatched by what kind of thing it is.
+    /// </summary>
+    /// <remarks>
+    /// Exists so the workbench can show an item as protected <em>before</em> the operator
+    /// approves a plan, rather than having the runner silently skip it afterwards. A
+    /// plan that quietly does less than it displayed is a plan nobody can audit — and
+    /// the answer shown must be the same one the runner will reach, which is why both
+    /// go through this method rather than each mapping kinds to checks itself.
+    /// </remarks>
+    public SafetyDecision Evaluate(RemovalItem item) => item.Kind switch
+    {
+        RemovalKind.File or RemovalKind.Directory => EvaluateFile(_paths.Expand(item.Target)),
+
+        RemovalKind.RegistryValue => EvaluateSplitValue(item),
+
+        RemovalKind.RegistryKey => EvaluateRegistryKey(item.Target),
+        RemovalKind.Service => EvaluateService(item.Target),
+        RemovalKind.ScheduledTask => EvaluateScheduledTask(item.Target),
+
+        // An autorun entry is a registry value wearing a different name; a firewall rule
+        // and a certificate are neither, and are allowed through to the runner, which
+        // has the kind-specific handling.
+        RemovalKind.AutorunEntry => item.ValueName is not null
+            ? EvaluateRegistryValue(item.Target, item.ValueName)
+            : EvaluateRegistryKey(item.Target),
+
+        _ => SafetyDecision.Allow(),
+    };
+
+    private SafetyDecision EvaluateSplitValue(RemovalItem item)
+    {
+        if (item.ValueName is not null) return EvaluateRegistryValue(item.Target, item.ValueName);
+
+        (string key, string? value) = RegistryPath.SplitValue(item.Target);
+        return EvaluateRegistryValue(key, value);
+    }
+
     public SafetyDecision EvaluateFile(string path)
     {
         if (string.IsNullOrWhiteSpace(path))

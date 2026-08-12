@@ -32,16 +32,52 @@ public static class ReportCommand
         if (cmd.Has("export-package"))
             return ExportPackage(cmd, store, session);
 
-        var query = new ObservationQuery
+        List<EventCategory>? categories = ParseCategories(cmd.Get("categories"));
+        string format = (cmd.Get("format") ?? "tree").ToLowerInvariant();
+        string? outPath = cmd.Get("out");
+
+        var request = new Export.ExportRequest
         {
-            Categories = ParseCategories(cmd.Get("categories")),
+            Format = format switch
+            {
+                "json" => Export.ExportFormat.Json,
+                "csv" => Export.ExportFormat.Csv,
+                "html" => Export.ExportFormat.Html,
+                "tree" => Export.ExportFormat.Tree,
+                _ => throw new CommandLineException(
+                    $"unsupported format '{format}'; use tree, json, csv, or html"),
+            },
+            Scope = cmd.Get("scope")?.ToLowerInvariant() switch
+            {
+                "minimal" => Export.ExportScope.Minimal,
+                "full" => Export.ExportScope.Full,
+                _ => cmd.Flag("include-reads") || cmd.Flag("include-out-of-scope")
+                    ? Export.ExportScope.Full
+                    : Export.ExportScope.Standard,
+            },
+            Categories = categories,
+            Language = Strings.Language,
         };
+
+        // CSV streams to the destination rather than being built in memory: a full
+        // session is millions of rows, and materialising that as one string is the
+        // difference between an export that works and one that runs the machine out
+        // of memory.
+        if (request.Format == Export.ExportFormat.Csv)
+        {
+            if (outPath is null) throw new CommandLineException("--out is required for --format csv");
+
+            using var writer = new StreamWriter(outPath, append: false, Export.CsvExporter.FileEncoding);
+            Export.CsvExporter.Write(writer, store, request);
+            Console.WriteLine($"written: {Path.GetFullPath(outPath)}");
+            return 0;
+        }
 
         var options = new CausalGraphOptions
         {
-            IncludeReads = cmd.Flag("include-reads"),
-            IncludeOutOfScope = cmd.Flag("include-out-of-scope"),
-            MaxArtifactsPerGroup = cmd.Int("max-per-group", 400),
+            IncludeReads = cmd.Flag("include-reads") || request.IncludeReads,
+            IncludeOutOfScope = cmd.Flag("include-out-of-scope") || request.IncludeOutOfScope,
+            MaxArtifactsPerGroup = cmd.Int("max-per-group", request.MaxArtifactsPerGroup),
             OriginId = cmd.Get("origin"),
 
             // Anchor on the subject unless the analyst explicitly asks for the whole
@@ -52,26 +88,24 @@ public static class ReportCommand
         };
 
         var builder = new CausalGraphBuilder(processes, flows);
-        IReadOnlyList<CausalNode> roots = builder.Build(store.Query(query), options);
+        IReadOnlyList<CausalNode> roots = builder.Build(
+            store.Query(new ObservationQuery { Categories = categories }), options);
 
-        string format = (cmd.Get("format") ?? "tree").ToLowerInvariant();
-        string rendered = format switch
+        string rendered = request.Format switch
         {
-            "tree" => TreeRenderer.Render(session, roots, store),
-            "json" => JsonRenderer.Render(session, roots),
+            Export.ExportFormat.Tree => Export.TreeTextExporter.Render(session, roots, store),
+            Export.ExportFormat.Json => System.Text.Json.JsonSerializer.Serialize(
+                Export.SessionProjection.BuildModel(store, session, request),
+                new System.Text.Json.JsonSerializerOptions(Export.SessionProjection.Json) { WriteIndented = true }),
 
             // The HTML report is the workbench markup with the session inlined, so a
             // reader who will never install the tool sees exactly what the analyst saw.
-            "html" => Modes.Assets.RenderStatic(Modes.WorkbenchWindow.BuildPayload(store, session, options)),
-
-            _ => throw new CommandLineException(
-                $"unsupported format '{format}'; use tree, json, or html"),
+            _ => Modes.Assets.RenderStatic(Export.SessionProjection.Build(store, session, request)),
         };
 
-        if (format == "html" && cmd.Get("out") is null)
+        if (request.Format == Export.ExportFormat.Html && outPath is null)
             throw new CommandLineException("--out is required for --format html");
 
-        string? outPath = cmd.Get("out");
         if (outPath is null)
         {
             Console.WriteLine(rendered);
@@ -172,168 +206,4 @@ public static class ReportCommand
         }
         return result;
     }
-}
-
-/// <summary>
-/// Renders the causal tree as text.
-/// </summary>
-/// <remarks>
-/// The layout intentionally matches what an analyst would draw by hand: the process
-/// lineage is the spine, verbs are the branches, and concrete artifacts are the
-/// leaves. Keeping the text form a first-class output — not a debug afterthought —
-/// means sessions can be diffed with ordinary tools, pasted into tickets, and read
-/// over SSH on a machine with no GUI.
-/// </remarks>
-public static class TreeRenderer
-{
-    public static string Render(SessionInfo session, IReadOnlyList<CausalNode> roots, SessionStore store)
-    {
-        var sb = new StringBuilder();
-
-        sb.AppendLine(CultureInfo.InvariantCulture, $"CaYaTrace session {session.SessionId}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"  name      {session.Name}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"  started   {session.StartedAt:u}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"  duration  {session.Duration.TotalSeconds:F1}s");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"  machine   {session.Machine.MachineName} · {session.Machine.OsBuild} · {session.Machine.Architecture}");
-        if (session.Machine.IsVirtualMachine)
-            sb.AppendLine(CultureInfo.InvariantCulture, $"  virtual   {session.Machine.Hypervisor}");
-        if (session.TargetPath is { Length: > 0 })
-            sb.AppendLine(CultureInfo.InvariantCulture, $"  target    {session.TargetPath}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"  events    {store.CountObservations():N0}");
-
-        Dictionary<EventCategory, long> byCategory = store.CountByCategory();
-        if (byCategory.Count > 0)
-        {
-            IEnumerable<string> parts = byCategory
-                .Where(static kv => kv.Key != EventCategory.Session)
-                .OrderByDescending(static kv => kv.Value)
-                .Select(static kv => $"{kv.Key.ToString().ToLowerInvariant()} {kv.Value:N0}");
-            sb.AppendLine(CultureInfo.InvariantCulture, $"            {string.Join(" · ", parts)}");
-        }
-
-        string? degraded = session.Quality.Summarize();
-        if (degraded is not null)
-        {
-            sb.AppendLine();
-            sb.AppendLine("  ⚠ DATA QUALITY");
-            sb.AppendLine(CultureInfo.InvariantCulture, $"    {degraded}");
-            sb.AppendLine("    Findings below are incomplete. Treat absence of evidence accordingly.");
-        }
-
-        foreach (string skipped in session.Quality.SkippedForPrivilege)
-            sb.AppendLine(CultureInfo.InvariantCulture, $"  ⚠ skipped: {skipped}");
-
-        sb.AppendLine();
-
-        if (roots.Count == 0)
-        {
-            sb.AppendLine("(no in-scope activity recorded)");
-            return sb.ToString();
-        }
-
-        foreach (CausalNode root in roots)
-            Write(sb, root, prefix: string.Empty, isLast: true, isRoot: true);
-
-        return sb.ToString();
-    }
-
-    private static void Write(StringBuilder sb, CausalNode node, string prefix, bool isLast, bool isRoot)
-    {
-        if (isRoot)
-        {
-            sb.AppendLine(Describe(node));
-        }
-        else
-        {
-            sb.Append(prefix).Append(isLast ? "└─ " : "├─ ").AppendLine(Describe(node));
-        }
-
-        string childPrefix = isRoot ? string.Empty : prefix + (isLast ? "   " : "│  ");
-
-        // Facts sit above children so a registry transition reads immediately under
-        // the value it belongs to rather than after a long artifact list.
-        for (int i = 0; i < node.Facts.Count; i++)
-        {
-            bool lastFact = i == node.Facts.Count - 1 && node.Children.Count == 0 && node.TruncatedChildren == 0;
-            sb.Append(childPrefix)
-              .Append(lastFact ? "└─ " : "├─ ")
-              .Append(node.Facts[i].Key)
-              .Append(": ")
-              .AppendLine(Collapse(node.Facts[i].Value));
-        }
-
-        for (int i = 0; i < node.Children.Count; i++)
-        {
-            bool lastChild = i == node.Children.Count - 1 && node.TruncatedChildren == 0;
-            Write(sb, node.Children[i], childPrefix, lastChild, isRoot: false);
-        }
-
-        if (node.TruncatedChildren > 0)
-        {
-            sb.Append(childPrefix)
-              .Append("└─ ")
-              .AppendLine(CultureInfo.InvariantCulture, $"… {node.TruncatedChildren:N0} more not shown");
-        }
-    }
-
-    private static string Describe(CausalNode node)
-    {
-        var sb = new StringBuilder(node.Label);
-
-        if (node.Sublabel is { Length: > 0 })
-            sb.Append("  (").Append(Collapse(node.Sublabel)).Append(')');
-
-        if (node.Kind == CausalNodeKind.ActionGroup && node.EventCount > 0)
-            sb.Append(CultureInfo.InvariantCulture, $"  [{node.EventCount:N0}]");
-
-        if (node.BytesWritten > 0)
-            sb.Append("  ").Append(FormatBytes(node.BytesWritten)).Append(" written");
-
-        if (node.BytesSent > 0 || node.BytesReceived > 0)
-        {
-            sb.Append("  ")
-              .Append(FormatBytes(node.BytesSent))
-              .Append(" sent / ")
-              .Append(FormatBytes(node.BytesReceived))
-              .Append(" received");
-        }
-
-        // Attribution quality is shown inline, not hidden in a detail pane: an edge
-        // that was inferred rather than observed changes what the analyst can claim.
-        if (node.Confidence is AttributionConfidence.Probable or AttributionConfidence.Weak)
-            sb.Append("  ~").Append(node.Confidence.ToString().ToLowerInvariant());
-
-        if (node.Source == EvidenceSource.SnapshotDiff)
-            sb.Append("  [snapshot diff]");
-
-        return sb.ToString();
-    }
-
-    private static string Collapse(string value)
-    {
-        string flat = value.ReplaceLineEndings(" ").Trim();
-        return flat.Length <= 300 ? flat : flat[..300] + "…";
-    }
-
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes < 1024) return $"{bytes} B";
-        double kb = bytes / 1024.0;
-        if (kb < 1024) return kb.ToString("0.#", CultureInfo.InvariantCulture) + " KB";
-        double mb = kb / 1024.0;
-        return mb < 1024
-            ? mb.ToString("0.#", CultureInfo.InvariantCulture) + " MB"
-            : (mb / 1024.0).ToString("0.##", CultureInfo.InvariantCulture) + " GB";
-    }
-}
-
-internal static class JsonRenderer
-{
-    public static string Render(SessionInfo session, IReadOnlyList<CausalNode> roots)
-        => System.Text.Json.JsonSerializer.Serialize(new { session, tree = roots },
-            new System.Text.Json.JsonSerializerOptions
-            {
-                WriteIndented = true,
-                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-            });
 }

@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\CaYaTrace.Collectors\CaYaTrace.Collectors.csproj" />
     <ProjectReference Include="..\..\src\CaYaTrace.Remediation\CaYaTrace.Remediation.csproj" />
     <ProjectReference Include="..\..\src\CaYaTrace.Fleet\CaYaTrace.Fleet.csproj" />
+    <ProjectReference Include="..\..\src\CaYaTrace.Export\CaYaTrace.Export.csproj" />
   </ItemGroup>
 
 </Project>

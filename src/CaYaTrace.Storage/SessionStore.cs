@@ -278,11 +278,17 @@ public sealed class SessionStore : IDisposable
     // ------------------------------------------------------------ observations
 
     /// <summary>
-    /// Direct batch write, bypassing <see cref="ObservationSink"/>. Exposed for tests
-    /// that need deterministic ordering; production writes go through the sink so they
-    /// never block a collection thread.
+    /// Writes observations that arrived already formed rather than from a live
+    /// collector.
     /// </summary>
-    public void WriteObservationBatchForTest(IReadOnlyList<Observation> batch)
+    /// <remarks>
+    /// Two callers, both legitimate: a batch received from a fleet agent, which was
+    /// collected on another machine and only needs storing here, and a test that needs
+    /// deterministic ordering. Live collection does not use this — it goes through
+    /// <see cref="ObservationSink"/>, which exists so that a slow disk cannot block an
+    /// ETW callback.
+    /// </remarks>
+    public void ImportObservations(IReadOnlyList<Observation> batch)
         => WriteObservationBatch(batch);
 
     internal void WriteObservationBatch(IReadOnlyList<Observation> batch)

@@ -78,7 +78,7 @@ public sealed class SessionStoreTests : IDisposable
         };
 
         using SessionStore store = SessionStore.Create(DbPath);
-        store.WriteObservationBatchForTest(new[] { observation });
+        store.ImportObservations(new[] { observation });
 
         Observation loaded = Assert.Single(store.Query());
 
@@ -95,7 +95,7 @@ public sealed class SessionStoreTests : IDisposable
     {
         using (SessionStore store = SessionStore.Create(DbPath))
         {
-            store.WriteObservationBatchForTest(new[]
+            store.ImportObservations(new[]
             {
                 new Observation { Seq = 1, Target = "a" },
                 new Observation { Seq = 2, Target = "b" },
@@ -111,7 +111,7 @@ public sealed class SessionStoreTests : IDisposable
     public void PersistentChangeFilterExcludesReads()
     {
         using SessionStore store = SessionStore.Create(DbPath);
-        store.WriteObservationBatchForTest(new[]
+        store.ImportObservations(new[]
         {
             new Observation { Seq = 1, Category = EventCategory.File, Action = EventAction.FileCreate, Target = "created" },
             new Observation { Seq = 2, Category = EventCategory.File, Action = EventAction.FileRead, Target = "read" },

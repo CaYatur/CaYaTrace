@@ -7,6 +7,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+
+    <!-- CSV cell encoding is a security control (spreadsheet formula injection) and is
+         worth testing directly, without making it part of the public surface. -->
+    <InternalsVisibleTo Include="CaYaTrace.Tests" />
   </ItemGroup>
 
   <ItemGroup>

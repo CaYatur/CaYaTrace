@@ -38,6 +38,17 @@
     <PublishReadyToRun>false</PublishReadyToRun>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <SelfContained>true</SelfContained>
+
+    <!--
+      Not trimming means carrying the whole runtime, and this is a tool people download
+      once and copy onto a USB stick. Compression roughly halves the published file for
+      a small one-off cost on first launch, which is the right trade for something whose
+      distribution story is "one file you can carry".
+    -->
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+
+    <!-- Reference XML documentation is for consumers of a library, not users of a tool. -->
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
 
 </Project>

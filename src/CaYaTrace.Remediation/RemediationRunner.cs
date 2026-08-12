@@ -281,9 +281,17 @@ public sealed class RemediationRunner
 
     private ItemResult ProcessRegistryValue(RemovalItem item)
     {
-        (string keyPath, string? valueName) = item.ValueName is not null
-            ? (item.Target, item.ValueName)
-            : RegistryPath.SplitValue(item.Target);
+        // The target is split first, whatever ValueName says.
+        //
+        // Autorun entries arrive from the snapshot differ as "key::value" *and* carry a
+        // ValueName, and taking the ValueName branch left the "::value" suffix inside
+        // the key path. OpenSubKey then returned null and the item was reported as "key
+        // not present on this machine" — a wrong answer that happens to be safe, which
+        // is the kind that survives to a release.
+        (string splitKey, string? splitValue) = RegistryPath.SplitValue(item.Target);
+        (string keyPath, string? valueName) = splitValue is not null
+            ? (splitKey, splitValue)
+            : (item.Target, item.ValueName);
 
         SafetyDecision decision = _policy.EvaluateRegistryValue(keyPath, valueName);
         if (decision.Verdict == SafetyVerdict.Forbidden)
@@ -728,19 +736,26 @@ public sealed class RemediationRunner
             : "DRY RUN — nothing will be changed. Add --apply to perform the removal.");
         Console.WriteLine();
 
+        // Registry items name a value under a key, and printing only the key made two
+        // different values look like the same line twice.
+        static string Name(RemovalItem item)
+            => item.ValueName is { Length: > 0 } && !item.Target.Contains("::", StringComparison.Ordinal)
+                ? $"{item.Target}::{item.ValueName}"
+                : item.Target;
+
         var runner = new RemediationRunner(quarantineRoot, apply)
         {
             ConfirmationHandler = (item, match, reason) =>
             {
                 if (!apply)
                 {
-                    Console.WriteLine($"  ? {item.Kind} {item.Target}");
+                    Console.WriteLine($"  ? {item.Kind} {Name(item)}");
                     Console.WriteLine($"      needs confirmation: {reason}");
                     return true;   // dry run reports what would be asked
                 }
 
                 Console.WriteLine();
-                Console.WriteLine($"  {item.Kind}: {item.Target}");
+                Console.WriteLine($"  {item.Kind}: {Name(item)}");
                 Console.WriteLine($"  rationale: {item.Rationale}");
                 Console.WriteLine($"  match:     {match}");
                 Console.WriteLine($"  caution:   {reason}");
@@ -757,7 +772,7 @@ public sealed class RemediationRunner
         {
             Console.WriteLine($"{group.Key} ({group.Count()})");
             foreach (ItemResult r in group.Take(200))
-                Console.WriteLine($"  {r.Item.Kind,-16} {r.Item.Target}   — {r.Detail}");
+                Console.WriteLine($"  {r.Item.Kind,-16} {Name(r.Item)}   — {r.Detail}");
             if (group.Count() > 200) Console.WriteLine($"  … {group.Count() - 200} more");
             Console.WriteLine();
         }

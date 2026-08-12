@@ -111,11 +111,21 @@ public sealed class RemovalPlanner
             byTarget[key] = item;
         }
 
+        // The safety policy is applied here, at plan time, not only at apply time.
+        //
+        // A plan is a document an operator reads and approves, and one that lists items
+        // the runner will silently refuse is a document that describes something other
+        // than what will happen. It also drowns the real findings: a 30-second recording
+        // of an installer produced 141 items, of which 119 were registry keys Windows
+        // wrote because the program had run at all.
+        var policy = new SafetyPolicy(_paths);
+
         var plan = new List<RemovalItem>();
         foreach ((string key, RemovalItem item) in byTarget)
         {
             HashSet<string> origins = originsByTarget[key];
             if (origins.Count < _options.MinimumOriginAgreement) continue;
+            if (policy.Evaluate(item).Verdict == SafetyVerdict.Forbidden) continue;
 
             item.ObservedOn.AddRange(origins);
             plan.Add(AttachTemplate(item));
@@ -304,6 +314,96 @@ public sealed class RemovalPlanner
 
     private static string Truncate(string value)
         => value.Length <= 60 ? value : value[..60] + "…";
+
+    /// <summary>
+    /// Builds a plan from a comparison of the same program across several machines.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the package worth carrying to a third machine. With one recording the
+    /// variable parts of a path can only be guessed; with two they are <em>measured</em>, and the
+    /// resulting pattern still matches on a machine that names its per-install
+    /// directories differently again.
+    /// </para>
+    /// <para>
+    /// Shared by the <c>compare</c> verb and the workbench so the two cannot produce
+    /// different packages from the same comparison.
+    /// </para>
+    /// </remarks>
+    public static List<RemovalItem> FromComparison(Analysis.MergeReport report, int minimumOrigins)
+    {
+        var items = new List<RemovalItem>();
+
+        // One artifact per thing, not per verb. A file that was created and then written
+        // produces two merged artifacts, and a plan listing both would ask the operator
+        // to approve the same removal twice.
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Analysis.MergedArtifact artifact in report.Artifacts)
+        {
+            if (artifact.SeenOn < minimumOrigins) continue;
+
+            RemovalKind kind = MapKind(artifact);
+            string target = artifact.ByOrigin.Values.First();
+
+            // Volume roots and device paths reach here when a program opens a raw volume
+            // handle. The safety policy would refuse them at apply time, but proposing
+            // them at all makes a plan look reckless and buries the real items.
+            if (!LooksRemovable(kind, target)) continue;
+            if (!seen.Add($"{kind}|{artifact.Template.Pattern}")) continue;
+
+            var item = new RemovalItem
+            {
+                Kind = kind,
+                Target = target,
+                Rationale = $"observed on {artifact.SeenOn} of {artifact.TotalOrigins} machines",
+                TargetPattern = artifact.Template.HasVariables ? artifact.Template.Pattern : null,
+                PatternEvidence = artifact.Template.Evidence,
+                Fingerprint = new ArtifactFingerprint { ValueData = artifact.NewValue },
+            };
+
+            item.ObservedOn.AddRange(artifact.ByOrigin.Keys);
+            item.Evidence.AddRange(artifact.Evidence.Take(32));
+            items.Add(item);
+        }
+
+        return items;
+    }
+
+    /// <summary>Rejects targets that are not things a removal plan can act on.</summary>
+    private static bool LooksRemovable(RemovalKind kind, string target)
+    {
+        if (string.IsNullOrWhiteSpace(target)) return false;
+
+        if (kind is RemovalKind.RegistryKey or RemovalKind.RegistryValue)
+            return target.StartsWith("HK", StringComparison.OrdinalIgnoreCase);
+
+        if (kind is RemovalKind.File or RemovalKind.Directory)
+        {
+            // A raw device or volume path, not a file.
+            if (target.StartsWith(@"\Device\", StringComparison.OrdinalIgnoreCase)) return false;
+            if (target.StartsWith(@"\\.\", StringComparison.Ordinal)) return false;
+
+            // Must name something inside a directory, not a root.
+            return target.Contains('\\', StringComparison.Ordinal);
+        }
+
+        return true;
+    }
+
+    private static RemovalKind MapKind(Analysis.MergedArtifact artifact) => artifact.Category switch
+    {
+        EventCategory.File => artifact.Action == EventAction.DirectoryCreate
+            ? RemovalKind.Directory
+            : RemovalKind.File,
+        EventCategory.Registry => artifact.Action == EventAction.KeyCreate
+            ? RemovalKind.RegistryKey
+            : RemovalKind.RegistryValue,
+        EventCategory.Service => RemovalKind.Service,
+        EventCategory.ScheduledTask => RemovalKind.ScheduledTask,
+        EventCategory.Autorun => RemovalKind.AutorunEntry,
+        _ => RemovalKind.File,
+    };
 
     /// <summary>Packages a plan for use on another machine.</summary>
     public static void Export(

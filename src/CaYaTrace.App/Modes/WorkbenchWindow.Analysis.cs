@@ -342,26 +342,9 @@ public sealed partial class WorkbenchWindow
 
         _ = Task.Run(() =>
         {
-            var stores = new List<SessionStore>();
             try
             {
-                var byOrigin = new Dictionary<string, IReadOnlyList<Observation>>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (string input in inputs)
-                {
-                    SessionStore store = SessionStore.Open(SessionPaths.Resolve(input));
-                    stores.Add(store);
-
-                    SessionInfo? info = store.LoadSessionInfo();
-                    if (info is null) continue;
-
-                    // Sessions recorded on cloned VMs can share a machine id, so the key
-                    // is made unique per session — otherwise two machines collapse into
-                    // one and their agreement is invented.
-                    byOrigin[$"{info.Machine.MachineName}#{info.SessionId}"] = LoadScopedChanges(store);
-                }
-
-                MergeReport report = new ArtifactMerger().Merge(byOrigin);
+                (MergeReport report, SessionInfo? reference) = Compare(inputs);
 
                 object Row(MergedArtifact a) => new
                 {
@@ -378,17 +361,46 @@ public sealed partial class WorkbenchWindow
                     stable = report.Artifacts.Where(static a => a.Consistency == Consistency.Universal).Select(Row).ToList(),
                     partial = report.Artifacts.Where(static a => a.Consistency == Consistency.Common).Select(Row).ToList(),
                     unique = report.Artifacts.Where(static a => a.Consistency == Consistency.Unique).Select(Row).ToList(),
+                    subject = reference?.Name,
                 });
             }
             catch (Exception ex) when (ex is IOException or FileNotFoundException or Microsoft.Data.Sqlite.SqliteException)
             {
                 Toast(ex.Message, "error");
             }
-            finally
-            {
-                foreach (SessionStore store in stores) store.Dispose();
-            }
         });
+    }
+
+    /// <summary>Merges several recordings of the same program, one origin per session.</summary>
+    private static (MergeReport Report, SessionInfo? Reference) Compare(List<string> inputs)
+    {
+        var stores = new List<SessionStore>();
+        try
+        {
+            var byOrigin = new Dictionary<string, IReadOnlyList<Observation>>(StringComparer.OrdinalIgnoreCase);
+            SessionInfo? reference = null;
+
+            foreach (string input in inputs)
+            {
+                SessionStore store = SessionStore.Open(SessionPaths.Resolve(input));
+                stores.Add(store);
+
+                SessionInfo? info = store.LoadSessionInfo();
+                if (info is null) continue;
+                reference ??= info;
+
+                // Sessions recorded on cloned VMs can share a machine id, so the key is
+                // made unique per session — otherwise two machines collapse into one and
+                // their agreement is invented.
+                byOrigin[$"{info.Machine.MachineName}#{info.SessionId}"] = LoadScopedChanges(store);
+            }
+
+            return (new ArtifactMerger().Merge(byOrigin), reference);
+        }
+        finally
+        {
+            foreach (SessionStore store in stores) store.Dispose();
+        }
     }
 
     /// <summary>
@@ -412,10 +424,54 @@ public sealed partial class WorkbenchWindow
             .ToList();
     }
 
+    /// <summary>
+    /// Writes a removal package built from what every compared machine agreed on.
+    /// </summary>
+    /// <remarks>
+    /// The package worth carrying to a third machine. With one recording the variable
+    /// parts of a path can only be guessed; with two they are measured, so the pattern
+    /// still matches on a machine that names its per-install directories differently
+    /// again. Only artifacts seen on <em>every</em> compared machine are included — a change
+    /// that happened once is a change this package has no business proposing to remove
+    /// somewhere else.
+    /// </remarks>
     private void CompareExportPackage(JsonElement payload)
     {
-        Toast(Strings.T("compare.export_package") + " — " +
-              "CaYaTrace compare <A> <B> --export-package plan.ctpkg");
+        List<string> inputs = StringList(payload, "sessions");
+        if (inputs.Count < 2) { Toast(Strings.T("compare.need_two"), "error"); return; }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = Strings.T("compare.export_package"),
+            FileName = "comparison" + RemovalPackage.Extension,
+            Filter = "CaYaTrace package (*.ctpkg)|*.ctpkg",
+            OverwritePrompt = true,
+            AddExtension = true,
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        string path = dialog.FileName;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                (MergeReport report, SessionInfo? reference) = Compare(inputs);
+                if (reference is null) { Toast(Strings.T("compare.need_two"), "error"); return; }
+
+                List<RemovalItem> items = RemovalPlanner.FromComparison(report, report.Origins.Count);
+                if (items.Count == 0) { Toast(Strings.T("remediate.empty")); return; }
+
+                RemovalPlanner.Export(path, reference, items);
+                Toast(Strings.Format("export.written", path), "ok");
+                Reveal(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                          or FileNotFoundException or Microsoft.Data.Sqlite.SqliteException)
+            {
+                Toast(ex.Message, "error");
+            }
+        });
     }
 
     // ---------------------------------------------------------------- assistant

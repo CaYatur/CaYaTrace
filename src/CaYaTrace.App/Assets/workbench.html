@@ -22,6 +22,7 @@
 <body>
 
 <script id="i18n" type="application/json">/*__I18N__*/</script>
+<!--__CAYATRACE_DATA__-->
 
 <div class="app">
 
@@ -578,7 +579,15 @@ function setView(view) {
 function renderLangSwitch() {
   const host = document.getElementById('langSwitch');
   host.innerHTML = '';
-  (state.host.languages || ['en']).forEach(code => {
+
+  // Taken from the catalogue rather than from the host, so an exported report — which
+  // never receives a boot message — still offers both languages. The report is written
+  // in the operator's language and read by whoever it was sent to.
+  const available = Object.keys(CATALOGUE)
+    .filter(code => !code.startsWith('_'))
+    .sort((a, b) => (a === 'en' ? -1 : b === 'en' ? 1 : a.localeCompare(b)));
+
+  (available.length ? available : ['en']).forEach(code => {
     const b = el('button', null, code.toUpperCase());
     b.type = 'button';
     b.setAttribute('aria-pressed', String(code === LANG));
@@ -1546,7 +1555,7 @@ function renderCompare() {
         tr.appendChild(cell(r.template || '', 'mono'));
         return tr;
       }));
-    host.parentElement && body.appendChild(card);
+    body.appendChild(card);
   });
 
   if ((result.stable || []).length) {

@@ -166,43 +166,9 @@ public static class CompareCommand
 
         int minimum = cmd.Int("min-origins", report.Origins.Count);
 
-        var items = new List<Remediation.RemovalItem>();
-
-        // One artifact per thing, not per verb. A file that was created and then
-        // written produces two merged artifacts, and a plan listing both would ask the
-        // operator to approve the same removal twice.
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (MergedArtifact artifact in report.Artifacts)
-        {
-            if (artifact.SeenOn < minimum) continue;
-
-            Remediation.RemovalKind kind = MapKind(artifact);
-            string target = artifact.ByOrigin.Values.First();
-
-            // Volume roots and device paths reach here when a program opens a raw
-            // volume handle. The safety policy would refuse them at apply time, but
-            // proposing them at all makes a plan look reckless and buries the real items.
-            if (!LooksRemovable(kind, target)) continue;
-
-            if (!seen.Add($"{kind}|{artifact.Template.Pattern}")) continue;
-
-            var item = new Remediation.RemovalItem
-            {
-                Kind = kind,
-                Target = target,
-                Rationale = $"observed on {artifact.SeenOn} of {artifact.TotalOrigins} machines",
-                // Measured across machines rather than guessed, which is what makes
-                // this package portable to a machine neither recording came from.
-                TargetPattern = artifact.Template.HasVariables ? artifact.Template.Pattern : null,
-                PatternEvidence = artifact.Template.Evidence,
-                Fingerprint = new Remediation.ArtifactFingerprint { ValueData = artifact.NewValue },
-            };
-
-            item.ObservedOn.AddRange(artifact.ByOrigin.Keys);
-            item.Evidence.AddRange(artifact.Evidence.Take(32));
-            items.Add(item);
-        }
+        // Shared with the workbench, so the same comparison cannot yield two different
+        // packages depending on which surface asked for it.
+        List<Remediation.RemovalItem> items = Remediation.RemovalPlanner.FromComparison(report, minimum);
 
         if (!output.EndsWith(Remediation.RemovalPackage.Extension, StringComparison.OrdinalIgnoreCase))
             output += Remediation.RemovalPackage.Extension;
@@ -214,43 +180,6 @@ public static class CompareCommand
         Console.WriteLine($"         {items.Count(static i => i.TargetPattern is not null)} carry a measured path pattern");
         return 0;
     }
-
-    /// <summary>
-    /// Rejects targets that are not things a removal plan can act on.
-    /// </summary>
-    private static bool LooksRemovable(Remediation.RemovalKind kind, string target)
-    {
-        if (string.IsNullOrWhiteSpace(target)) return false;
-
-        if (kind is Remediation.RemovalKind.RegistryKey or Remediation.RemovalKind.RegistryValue)
-            return target.StartsWith("HK", StringComparison.OrdinalIgnoreCase);
-
-        if (kind is Remediation.RemovalKind.File or Remediation.RemovalKind.Directory)
-        {
-            // A raw device or volume path, not a file.
-            if (target.StartsWith(@"\Device\", StringComparison.OrdinalIgnoreCase)) return false;
-            if (target.StartsWith(@"\\.\", StringComparison.Ordinal)) return false;
-
-            // Must name something inside a directory, not a root.
-            return target.Contains('\\', StringComparison.Ordinal);
-        }
-
-        return true;
-    }
-
-    private static Remediation.RemovalKind MapKind(MergedArtifact artifact) => artifact.Category switch
-    {
-        EventCategory.File => artifact.Action == EventAction.DirectoryCreate
-            ? Remediation.RemovalKind.Directory
-            : Remediation.RemovalKind.File,
-        EventCategory.Registry => artifact.Action == EventAction.KeyCreate
-            ? Remediation.RemovalKind.RegistryKey
-            : Remediation.RemovalKind.RegistryValue,
-        EventCategory.Service => Remediation.RemovalKind.Service,
-        EventCategory.ScheduledTask => Remediation.RemovalKind.ScheduledTask,
-        EventCategory.Autorun => Remediation.RemovalKind.AutorunEntry,
-        _ => Remediation.RemovalKind.File,
-    };
 
     private static string ResolveSession(string input)
     {

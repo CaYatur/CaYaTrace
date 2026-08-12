@@ -115,6 +115,16 @@ public sealed class CommandLine
               CaYaTrace agent  [options]               Run as a fleet collection agent
               CaYaTrace version
 
+            GLOBAL
+              --lang <en|tr>         Interface language. Defaults to the system language
+                                     when CaYaTrace has it, otherwise English.
+
+            WORKBENCH
+              --session <dir|file>   Open this session on startup
+              --view <name>          Open on a section: overview, capture, sessions,
+                                     findings, tree, network, compare, assistant,
+                                     remediate, fleet
+
             TRACE
               --target <path>        Program to launch and observe
               --args <string>        Arguments passed to the target
@@ -143,9 +153,15 @@ public sealed class CommandLine
             REPORT
               --session <dir|file>   Session to render
               --format <fmt>         tree | json | html | csv    (default tree)
+              --scope <level>        minimal | standard | full   (default standard)
+                                     minimal is findings only, for a reader who will
+                                     not open a tree; full includes reads and activity
+                                     never attributed to the subject.
               --categories <list>    Comma-separated category filter
               --out <path>           Write to a file instead of stdout
+                                     Required for html and csv.
               --include-reads        Include read operations in the tree
+              --export-package <f>   Write a removal package instead of a report
 
             REMEDIATE
               --package <file.ctpkg> Removal package to apply
@@ -183,7 +199,15 @@ public sealed class CommandLine
             AGENT
               --host <addr:port>     Host to report to once paired
               --pair <code>          One-time pairing code issued by the host
-              --listen <port>        Accept an inbound host connection instead
+              --out <dir>            Where the agent records locally (default ./sessions)
+
+              The agent connects out and then does nothing until the host approves it,
+              so running one does not give that machine a remote entry point. Both
+              values are shown in the workbench's Fleet tab on the host machine.
+
+              Packet capture and HTTPS interception cannot be started remotely. Both
+              change the machine they run on, and a host that could trigger them would
+              turn a paired agent into a remote administration channel.
 
             Kernel tracing requires an elevated process. Everything else does not.
 

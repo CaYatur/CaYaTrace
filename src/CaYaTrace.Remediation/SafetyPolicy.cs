@@ -96,6 +96,93 @@ public sealed class SafetyPolicy
     };
 
     /// <summary>
+    /// Places Windows records that a program ran, rather than places a program installs
+    /// itself into.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This list exists because of a measured failure. A plan built from a 30-second
+    /// recording of an installer proposed deleting values under the Background Activity
+    /// Moderator, the user's Internet Settings zone map, and the shared INetCache — none
+    /// of which the subject installed. It had merely <em>run</em>, and Windows wrote those
+    /// entries about it.
+    /// </para>
+    /// <para>
+    /// The distinction the planner cannot make on its own is between "the subject
+    /// created this" and "Windows recorded that the subject existed". Undoing the second
+    /// is not uninstalling anything; it is damaging shared state that other programs
+    /// depend on, and doing it under the banner of a clean removal is worse than leaving
+    /// residue behind.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] ActivityRecordRegistryPrefixes =
+    {
+        // Background Activity Moderator and the desktop activity moderator: Windows'
+        // own record of which executables ran and when.
+        @"HKLM\SYSTEM\CurrentControlSet\Services\bam",
+        @"HKLM\SYSTEM\CurrentControlSet\Services\dam",
+
+        // Shell and compatibility caches, written for anything that is launched.
+        @"HKCU\SOFTWARE\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache",
+        @"HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags",
+        @"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags",
+        @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\UserAssist",
+        @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs",
+        @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32",
+        @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FeatureUsage",
+
+        // The user's own network and browser configuration. A program that made one
+        // HTTP request touches these; none of it is that program's to remove.
+        @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
+        @"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings",
+        @"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved",
+        @"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager",
+
+        // Group policy. Machine administration, never an application's to undo.
+        @"HKLM\SOFTWARE\Policies",
+        @"HKCU\SOFTWARE\Policies",
+    };
+
+    /// <summary>
+    /// Path segments that make a key shared machine trust configuration wherever it
+    /// appears.
+    /// </summary>
+    /// <remarks>
+    /// A segment rule rather than more prefixes, because these stores exist under at
+    /// least six roots — per-user, per-machine, enterprise, and group-policy variants of
+    /// each — and the observed plan named a different one every few lines. They are
+    /// created on demand by the crypto API, so <em>any</em> program that validates a signature
+    /// or makes an HTTPS request appears to have "created" them. Removing one breaks
+    /// certificate validation for the whole machine.
+    /// </remarks>
+    private static readonly string[] TrustStoreSegments =
+    {
+        "SystemCertificates",
+        "EnterpriseCertificates",
+        "Trust Providers",
+        "CertificateTransparency",
+    };
+
+    /// <summary>
+    /// Shared caches Windows maintains for every program. Same reasoning as
+    /// <see cref="ActivityRecordRegistryPrefixes"/>, on the file system.
+    /// </summary>
+    private static readonly string[] SharedCachePathTokens =
+    {
+        @"%LOCALAPPDATA%\Microsoft\Windows\INetCache",
+        @"%LOCALAPPDATA%\Microsoft\Windows\INetCookies",
+        @"%LOCALAPPDATA%\Microsoft\Windows\WebCache",
+        @"%LOCALAPPDATA%\Microsoft\Windows\Explorer",
+        @"%LOCALAPPDATA%\Microsoft\Windows\Caches",
+        @"%LOCALAPPDATA%\Microsoft\Windows\History",
+        @"%LOCALAPPDATA%\Microsoft\CLR_v4.0",
+        @"%LOCALAPPDATA%\CrashDumps",
+        @"%APPDATA%\Microsoft\Windows\Recent",
+        @"%PROGRAMDATA%\Microsoft\Windows\Caches",
+        @"%PROGRAMDATA%\Microsoft\Windows Defender",
+    };
+
+    /// <summary>
     /// Registry locations that are legitimate removal targets but sit on shared
     /// surfaces, where deleting the whole key would take unrelated software with it.
     /// Only individual values under these may be removed.
@@ -124,6 +211,12 @@ public sealed class SafetyPolicy
         "Themes", "TrustedInstaller", "UserManager", "Winmgmt", "WinDefend",
         "wscsvc", "WSearch", "MpsSvc", "SystemEventsBroker", "StateRepository",
         "TermService", "UsoSvc", "wuauserv", "AppInfo", "SecurityHealthService",
+
+        // Networking and storage. A machine that loses these does not come back on the
+        // network, or does not boot.
+        "Tcpip", "Tcpip6", "NetBT", "afd", "netbios", "tdx", "Winsock", "WinSock2",
+        "disk", "partmgr", "volmgr", "volsnap", "storahci", "stornvme", "NTFS",
+        "FltMgr", "Ndis", "NdisWan", "NativeWifiP", "WlanSvc", "WwanSvc",
     };
 
     public SafetyPolicy(PathNormalizer paths) => _paths = paths;
@@ -195,6 +288,24 @@ public sealed class SafetyPolicy
             }
         }
 
+        foreach (string cache in SharedCachePathTokens)
+        {
+            if (token.StartsWith(cache, StringComparison.OrdinalIgnoreCase)
+                && (token.Length == cache.Length || token[cache.Length] == '\\'))
+            {
+                return SafetyDecision.Forbid($"{cache} is a cache Windows keeps for every program");
+            }
+        }
+
+        // A raw device or volume path is not a file. These reach a plan when a program
+        // opens a volume handle, and proposing them makes a plan look reckless.
+        if (token.StartsWith(@"\Device\", StringComparison.OrdinalIgnoreCase)
+            || token.StartsWith(@"\\.\", StringComparison.Ordinal)
+            || token.StartsWith(@"\??\", StringComparison.Ordinal))
+        {
+            return SafetyDecision.Forbid("this is a device path, not a file");
+        }
+
         // A drive root, with or without a trailing separator.
         if (expanded.Length <= 3 && expanded.Contains(':', StringComparison.Ordinal))
             return SafetyDecision.Forbid("refusing to act on a drive root");
@@ -221,7 +332,7 @@ public sealed class SafetyPolicy
         if (string.IsNullOrWhiteSpace(keyPath))
             return SafetyDecision.Forbid("empty registry path");
 
-        string normalized = RegistryPath.Normalize(keyPath);
+        string normalized = CanonicalizeControlSet(RegistryPath.Normalize(keyPath));
         (string hive, string subKey) = RegistryPath.Split(normalized);
 
         if (subKey.Length == 0)
@@ -233,6 +344,25 @@ public sealed class SafetyPolicy
                 && (normalized.Length == forbidden.Length || normalized[forbidden.Length] == '\\'))
             {
                 return SafetyDecision.Forbid($"{forbidden} is required for Windows to boot or log on");
+            }
+        }
+
+        foreach (string record in ActivityRecordRegistryPrefixes)
+        {
+            if (normalized.StartsWith(record, StringComparison.OrdinalIgnoreCase)
+                && (normalized.Length == record.Length || normalized[record.Length] == '\\'))
+            {
+                return SafetyDecision.Forbid(
+                    $"{record} is where Windows records that a program ran, not something a program installs");
+            }
+        }
+
+        foreach (string segment in TrustStoreSegments)
+        {
+            if (HasSegment(normalized, segment))
+            {
+                return SafetyDecision.Forbid(
+                    $"{segment} is a machine-wide trust store, created on demand by anything that checks a signature");
             }
         }
 
@@ -248,13 +378,73 @@ public sealed class SafetyPolicy
 
         if (normalized.StartsWith(@"HKLM\SYSTEM\CurrentControlSet\Services\", StringComparison.OrdinalIgnoreCase))
         {
-            string service = normalized[@"HKLM\SYSTEM\CurrentControlSet\Services\".Length..].Split('\\')[0];
-            if (ProtectedServices.Contains(service))
-                return SafetyDecision.Forbid($"{service} is a core Windows service");
+            string[] parts = normalized[@"HKLM\SYSTEM\CurrentControlSet\Services\".Length..].Split('\\');
+
+            if (ProtectedServices.Contains(parts[0]))
+                return SafetyDecision.Forbid($"{parts[0]} is a core Windows service");
+
+            // A service's own subkeys are its configuration. Removing one while leaving
+            // the service is never a legitimate uninstall step — if the service is being
+            // removed, its key goes as a unit. Without this rule a plan proposed
+            // deleting Tcpip\Parameters, which would take the machine's networking
+            // configuration with it.
+            if (parts.Length > 1)
+            {
+                return SafetyDecision.Forbid(
+                    $"{parts[0]} already exists; its configuration is not the subject's to remove");
+            }
         }
 
         _ = hive;
         return SafetyDecision.Allow();
+    }
+
+    /// <summary>
+    /// Rewrites a numbered control set to the boot-selected one, so a rule written once
+    /// holds however the path was observed.
+    /// </summary>
+    /// <remarks>
+    /// Kernel events name the concrete set — <c>ControlSet001</c> — while every rule anyone
+    /// would write names <c>CurrentControlSet</c>. Without this the protected-service list
+    /// and the activity-record list both miss, which is how a plan came to propose
+    /// deleting values under <c>ControlSet001\Services\bam</c>.
+    /// </remarks>
+    /// <summary>
+    /// True when a backslash-delimited path contains this exact segment.
+    /// </summary>
+    /// <remarks>
+    /// A substring test would match a key an application legitimately owns and happened
+    /// to name something like <c>MySystemCertificatesCache</c>; the boundaries matter.
+    /// </remarks>
+    private static bool HasSegment(string path, string segment)
+    {
+        int index = 0;
+        while ((index = path.IndexOf(segment, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            bool leftOk = index == 0 || path[index - 1] == '\\';
+            int after = index + segment.Length;
+            bool rightOk = after == path.Length || path[after] == '\\';
+
+            if (leftOk && rightOk) return true;
+            index = after;
+        }
+        return false;
+    }
+
+    private static string CanonicalizeControlSet(string normalized)
+    {
+        const string prefix = @"HKLM\SYSTEM\ControlSet";
+        if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return normalized;
+
+        int i = prefix.Length;
+        while (i < normalized.Length && char.IsAsciiDigit(normalized[i])) i++;
+
+        // Must be digits followed by a separator or the end, so "ControlSetFoo" is left
+        // alone rather than silently rewritten.
+        if (i == prefix.Length) return normalized;
+        if (i < normalized.Length && normalized[i] != '\\') return normalized;
+
+        return @"HKLM\SYSTEM\CurrentControlSet" + normalized[i..];
     }
 
     public SafetyDecision EvaluateRegistryValue(string keyPath, string? valueName)
@@ -265,7 +455,7 @@ public sealed class SafetyPolicy
         // "shared key" refusal does not apply at value granularity.
         if (keyDecision.Verdict == SafetyVerdict.Forbidden)
         {
-            string normalized = RegistryPath.Normalize(keyPath);
+            string normalized = CanonicalizeControlSet(RegistryPath.Normalize(keyPath));
             bool valueOnlySurface = ValueOnlyRegistryPrefixes.Any(p =>
                 string.Equals(normalized, p, StringComparison.OrdinalIgnoreCase));
 

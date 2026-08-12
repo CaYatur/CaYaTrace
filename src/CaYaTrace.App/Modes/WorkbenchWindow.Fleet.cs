@@ -186,6 +186,18 @@ public sealed partial class WorkbenchWindow
     /// </remarks>
     private void OnAgentBatch(FleetAgentConnection agent, ObservationBatch batch)
     {
+        // Marshalled to the UI thread. This fires from one receive loop per agent, and
+        // the store map and the SQLite connections underneath it are not thread-safe —
+        // a defect that would never appear with the single agent it is easiest to test
+        // with, and would appear on exactly the multi-VM run the feature exists for.
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(() => OnAgentBatch(agent, batch)); }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+            return;
+        }
+
         try
         {
             if (!_agentStores.TryGetValue(agent.Id, out SessionStore? store))

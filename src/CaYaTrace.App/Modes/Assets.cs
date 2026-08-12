@@ -18,6 +18,7 @@ public static class Assets
     private const string CssResource = "CaYaTrace.Assets.theme.css";
     private const string CssPlaceholder = "/*__THEME_CSS__*/";
     private const string I18nPlaceholder = "/*__I18N__*/";
+    private const string DataPlaceholder = "<!--__CAYATRACE_DATA__-->";
 
     private static readonly Lazy<string> Document = new(Compose, LazyThreadSafetyMode.ExecutionAndPublication);
 
@@ -28,22 +29,26 @@ public static class Assets
     /// The same document with a session baked in, ready to write to disk and open in
     /// any browser.
     /// </summary>
+    /// <remarks>
+    /// Substituted into an explicit placeholder, the same way the stylesheet and the
+    /// string catalogue are. An earlier version searched for the page's own
+    /// <c>&lt;script&gt;</c> element by text; that string contains a newline, so under a
+    /// checkout with CRLF line endings the search missed and the fallback inserted the
+    /// payload <em>inside</em> the existing script element — a nested tag, a syntax error, and
+    /// a report that renders its own source as visible text. Placeholders do not have
+    /// line endings.
+    /// </remarks>
     public static string RenderStatic(string sessionJson)
     {
-        // Injected before the first script so the page finds data already present and
-        // never attempts the WebView2 bridge path.
         string payload = $"<script>window.__CAYATRACE_DATA__ = {sessionJson};</script>";
 
-        // Anchored on the page's own script element rather than the first "<script>" in
-        // the file, because the i18n block is a script tag too and inserting ahead of it
-        // would put the data before the catalogue it is rendered with.
-        const string anchor = "<script>\n\"use strict\";";
-        int marker = Document.Value.IndexOf(anchor, StringComparison.Ordinal);
-        if (marker < 0) marker = Document.Value.IndexOf("\"use strict\"", StringComparison.Ordinal);
+        if (!Document.Value.Contains(DataPlaceholder, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"the workbench document has no {DataPlaceholder} placeholder to write the session into");
+        }
 
-        return marker < 0
-            ? Document.Value + payload
-            : Document.Value.Insert(marker, payload + Environment.NewLine);
+        return Document.Value.Replace(DataPlaceholder, payload, StringComparison.Ordinal);
     }
 
     private static string Compose()

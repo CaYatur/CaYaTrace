@@ -208,7 +208,16 @@ public sealed class FlowTable
         //
         // The connect and accept events establish orientation; everything else attaches
         // to what they established.
-        if (_flows.TryGetValue(key.Reversed(), out NetworkFlow? reversed))
+        //
+        // Except on loopback, where both ends of the connection are sockets on this
+        // machine and the kernel reports each of them. Their tuples are exact reverses,
+        // but they are two records worth keeping apart: the same bytes are observed
+        // twice — once leaving one socket and once arriving at the other — so unifying
+        // them would report double the traffic that crossed. And they have different
+        // owners, which is the whole question when the subject is talking to the
+        // intercepting proxy: collapsing them hands both sides to whichever process
+        // registered first.
+        if (!key.IsLoopback && _flows.TryGetValue(key.Reversed(), out NetworkFlow? reversed))
         {
             reversed.LastSeen = Max(reversed.LastSeen, when);
             return reversed;
@@ -225,9 +234,18 @@ public sealed class FlowTable
     /// <summary>
     /// The flow for this conversation, in whichever orientation it was first seen.
     /// </summary>
+    /// <remarks>
+    /// Loopback is exact-match only, for the reason given in
+    /// <see cref="GetOrCreateLocked"/>: both ends are separate records there.
+    /// </remarks>
     public NetworkFlow? Find(FlowKey key)
     {
-        lock (_gate) return _flows.GetValueOrDefault(key) ?? _flows.GetValueOrDefault(key.Reversed());
+        lock (_gate)
+        {
+            NetworkFlow? exact = _flows.GetValueOrDefault(key);
+            if (exact is not null || key.IsLoopback) return exact;
+            return _flows.GetValueOrDefault(key.Reversed());
+        }
     }
 
     public void NoteBytes(FlowKey key, DateTimeOffset when, long sent, long received, long packetsSent = 0, long packetsReceived = 0)
@@ -245,11 +263,8 @@ public sealed class FlowTable
 
     public void NoteClose(FlowKey key, DateTimeOffset when)
     {
-        lock (_gate)
-        {
-            NetworkFlow? flow = _flows.GetValueOrDefault(key) ?? _flows.GetValueOrDefault(key.Reversed());
-            if (flow is not null) flow.ClosedAt = when;
-        }
+        NetworkFlow? flow = Find(key);
+        if (flow is not null) flow.ClosedAt = when;
     }
 
     /// <summary>Attaches a resolved hostname to every flow to that address.</summary>

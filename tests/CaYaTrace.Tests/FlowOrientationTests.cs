@@ -109,4 +109,49 @@ public sealed class FlowOrientationTests
 
         Assert.Equal(2, table.Snapshot().Count);
     }
+
+    /// <summary>
+    /// Both ends of a loopback connection stay separate records.
+    /// </summary>
+    /// <remarks>
+    /// The discriminating case for the orientation fix, and the one that would have made
+    /// it a regression. On loopback the two sockets are on this machine and the kernel
+    /// reports each of them, so their tuples are exact reverses of one another — but the
+    /// same bytes are observed twice, once leaving one socket and once arriving at the
+    /// other. Unified, the record would claim double the traffic that crossed.
+    ///
+    /// This is not hypothetical: it is exactly the shape of a subject talking to the
+    /// intercepting proxy, where the two ends also have different owners and which
+    /// process is on each end is the entire question.
+    /// </remarks>
+    [Fact]
+    public void BothEndsOfALoopbackConnectionStaySeparate()
+    {
+        var table = new FlowTable();
+        DateTimeOffset t = DateTimeOffset.UtcNow;
+
+        var client = new FlowKey(TransportProtocol.Tcp, IPAddress.Loopback, 51000, IPAddress.Loopback, 8443);
+        var server = client.Reversed();
+
+        var subject = new ProcessKey(1234, 0xAABB, 0);
+        var proxy = new ProcessKey(4321, 0xCCDD, 0);
+
+        table.NoteConnect(client, subject, t);
+        table.NoteBytes(client, t, sent: 900, received: 0);
+
+        table.NoteConnect(server, proxy, t);
+        table.NoteBytes(server, t, sent: 0, received: 900);
+
+        List<NetworkFlow> flows = table.Snapshot().ToList();
+        Assert.Equal(2, flows.Count);
+
+        // The same 900 bytes, seen once from each socket — not 900 sent and 900
+        // received on one conversation.
+        Assert.Equal(900, flows.Sum(static f => f.BytesSent));
+        Assert.Equal(900, flows.Sum(static f => f.BytesReceived));
+
+        // And each end keeps its own owner.
+        Assert.Contains(flows, f => f.Owner == subject);
+        Assert.Contains(flows, f => f.Owner == proxy);
+    }
 }

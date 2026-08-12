@@ -365,9 +365,8 @@
     "timeline.title": "Timeline",
     "timeline.subtitle": "What ran, in order, for how long, and what each one touched. Windows will not say which process closed another without a kernel driver, so an ending is shown with its exit status rather than a culprit.",
     "timeline.filter_placeholder": "Filter by name, path or command line…",
-    "timeline.notable_only": "Only ones worth a look",
-    "timeline.none": "Nothing to show",
-    "timeline.none_hint": "No process matched the filter.",
+    "timeline.none": "Nothing started during this session",
+    "timeline.none_hint": "No process started while this was recording. Tick the box above to see what was already running.",
     "timeline.running": "still running",
     "timeline.elevated": "admin",
     "timeline.unsigned": "unsigned",
@@ -480,7 +479,8 @@
     "network.body_title": "Conversation contents — {0}",
     "network.body_binary": "Not text, so it is shown as bytes.",
     "network.body_truncated": "Only the beginning was kept. The start of a conversation is where the protocol, the request and the credentials are; the rest is usually payload.",
-    "network.body_unknown": "That content is not in this session."
+    "network.body_unknown": "That content is not in this session.",
+    "timeline.include_existing": "Also show what was already running"
   },
   "tr": {
     "app.title": "CaYaTrace",
@@ -836,9 +836,8 @@
     "timeline.title": "Zaman çizelgesi",
     "timeline.subtitle": "Ne çalıştı, hangi sırayla, ne kadar süreyle ve her biri neye dokundu. Windows, çekirdek sürücüsü olmadan bir sürecin hangi süreci kapattığını bildirmez; bu yüzden sonlanma, bir suçlu yerine çıkış durumuyla gösterilir.",
     "timeline.filter_placeholder": "Ada, yola veya komut satırına göre süz…",
-    "timeline.notable_only": "Yalnızca dikkat çekenler",
-    "timeline.none": "Gösterilecek bir şey yok",
-    "timeline.none_hint": "Süzgece uyan süreç yok.",
+    "timeline.none": "Bu oturum sırasında hiçbir şey başlamadı",
+    "timeline.none_hint": "Kayıt sırasında hiçbir süreç başlamadı. Zaten çalışmakta olanları görmek için yukarıdaki kutuyu işaretleyin.",
     "timeline.running": "hâlâ çalışıyor",
     "timeline.elevated": "yönetici",
     "timeline.unsigned": "imzasız",
@@ -951,6 +950,7 @@
     "network.body_title": "Konuşma içeriği — {0}",
     "network.body_binary": "Metin olmadığı için baytlar hâlinde gösteriliyor.",
     "network.body_truncated": "Yalnızca başı saklandı. Bir konuşmanın başı; protokolün, isteğin ve kimlik bilgilerinin bulunduğu yerdir, gerisi genellikle veridir.",
-    "network.body_unknown": "Bu içerik bu oturumda yok."
+    "network.body_unknown": "Bu içerik bu oturumda yok.",
+    "timeline.include_existing": "Zaten çalışmakta olanları da göster"
   }
 }

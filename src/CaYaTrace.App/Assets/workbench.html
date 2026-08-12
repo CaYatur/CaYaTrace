@@ -215,7 +215,7 @@
           <input type="search" id="timelineSearch" data-i18n-placeholder="timeline.filter_placeholder"
                  autocomplete="off" spellcheck="false">
           <label class="check"><input type="checkbox" id="timelineNotable">
-            <span data-i18n="timeline.notable_only"></span></label>
+            <span data-i18n="timeline.include_existing"></span></label>
         </div>
         <div id="timelineBody" style="padding:16px 0 40px"></div>
       </section>
@@ -420,7 +420,13 @@ const state = {
 
   /* Conversation view: the reader chooses what to read, not the tool. */
   timelineQuery: '',
-  timelineNotable: false,
+
+  /*
+   * Processes that were already running are context, not content. A session's timeline
+   * opening on Idle, System and smss.exe buries the four programs the subject actually
+   * started, so they are folded away until asked for.
+   */
+  timelinePreExisting: false,
 
   /*
    * Tokenised paths are the default and stay the default: they are what makes two
@@ -667,7 +673,12 @@ function needsSession(id) {
 function navCount(id) {
   if (id === 'findings' && state.findings.length) return formatNumber(state.findings.length);
   if (id === 'persistence' && state.persistence.length) return formatNumber(state.persistence.length);
-  if (id === 'timeline' && state.timeline.length) return formatNumber(state.timeline.length);
+  if (id === 'timeline') {
+    // What started during the session, not everything that was running — the count
+    // should agree with what the view opens on.
+    const started = state.timeline.filter(e => !e.preExisting).length;
+    return started ? formatNumber(started) : '';
+  }
   if (id === 'network') {
     const n = state.network.requests.length + state.network.flows.length;
     return n ? formatNumber(n) : '';
@@ -2564,7 +2575,7 @@ function renderTimeline() {
 
   const q = state.timelineQuery.trim().toLowerCase();
   const rows = state.timeline.filter(e => {
-    if (state.timelineNotable && !(e.notes || []).length) return false;
+    if (e.preExisting && !state.timelinePreExisting) return false;
     if (!q) return true;
     return (e.name || '').toLowerCase().includes(q)
         || (e.path || '').toLowerCase().includes(q)
@@ -2980,7 +2991,7 @@ function wire() {
   });
 
   document.getElementById('timelineNotable').addEventListener('change', e => {
-    state.timelineNotable = e.target.checked;
+    state.timelinePreExisting = e.target.checked;
     renderTimeline();
   });
 

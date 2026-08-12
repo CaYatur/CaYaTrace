@@ -76,7 +76,13 @@ data genuinely more useful than reading two sessions side by side.
 
 ## Later
 
-- Timeline scrubbing and a virtualized tree
+- Scrubbing along the timeline, and a virtualized tree. The timeline itself landed in
+  0.2.0; what is still missing is dragging a window across it and seeing the rest of the
+  views follow.
+- Contents of loopback conversations. They are visible as connections, but the Windows
+  packet monitor observes network adapters and traffic that never leaves the machine does
+  not cross one. The intercepting proxy covers local HTTP; anything else would need a
+  different capture path.
 - Redaction pass before sharing a session
 - Comparison results shown in the workbench alongside the CLI output
 - ARM64 release binaries

@@ -4,6 +4,106 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] — 2026-08-12
+
+Recorded the same installer with two other tools at the same time, on the same machine,
+and compared what each of them said. Almost everything below came out of that comparison
+or out of running the result — the evidence was already being collected and nothing was
+reading it.
+
+### Added
+
+**Persistence** — a view, and a model behind it. Every way a program arranged to run
+again, one entry per mechanism rather than one per registry value, carrying what it
+configured: image path, display name, start type, delayed start, account, and its recovery
+actions decoded into words. Covers services, drivers, scheduled tasks, run keys, startup
+folders, logon hooks, launch hijacking, AppInit and AppCert DLLs, boot execution,
+authentication packages, security providers, netsh helpers, print monitors, time
+providers, Winsock providers, COM servers, shell extensions, browser add-ons, Active
+Setup, group policy scripts and command-prompt autorun.
+
+**Timeline** — what ran, in order, for how long, under which parent, with what command
+line, and what each one touched. It says plainly that Windows will not report which
+process closed another without a kernel driver, rather than guessing from timing.
+
+**Conversations** — the contents of what crossed the wire, reassembled from the packet
+capture and grouped by whether the peer is on this machine, on the local network, or on
+the internet. The local-network grouping is the point: a program talking to a peer or to
+its own second copy appears in no firewall log, no proxy and no HTTP stack. Bodies are
+stored content-addressed and opened on demand.
+
+**Ask the session** — the assistant answers questions about what was recorded. Answers
+are computed from the session; a local model, when one is configured, only rewords them,
+is never asked to find anything, and cannot introduce a fact. Both are shown separately.
+With no model the answers still work.
+
+**Removal, finished** — progress while it runs, what fought it, and what to do with what
+was quarantined: keep, put back, or delete for good. Anything configured to restart itself
+is disarmed first — recovery actions cleared, autostart set to manual, watchdog groups
+stopped together — because a removal running while its subject puts itself back looks like
+it worked. Packages can now be opened and applied from the window.
+
+**Fleet, both halves** — a machine can join a fleet from the window instead of only from a
+terminal. Each connected machine gets its own panel with a live sample of what it is
+doing, its process list, and the ability to stop a process, its children, or a service.
+That is bounded on the agent side: it refuses anything the kernel marks critical and
+re-checks every process id before acting. Recording options are chosen per run, and a
+finished agent stays connected so a second recording does not mean re-pairing a machine
+that was already trusted.
+
+Also: an option to see what a path token stands for on the machine that recorded it, and
+the workbench lets go of its console rather than hiding it — so software that kills
+console hosts cannot take a recording with it, and starting the tool from a terminal no
+longer hides the operator's own window.
+
+### Fixed
+
+Each of these was found by reading real output, not by reading code.
+
+- **A transferred session lost everything that made it readable.** 106,311 observations
+  arrived with zero processes and zero flows, because the agent streamed only
+  observations. The whole causal tree hung under one "(unattributed)" root, the network
+  view was empty, and nothing could be tied to the subject.
+- **61 critical "code injection" findings, every one Windows acting on Windows.** The
+  judgment moved out of the collector — where signatures are not yet verified and a
+  discard is permanent — into the scorer, and the trust test is the code signature rather
+  than the path, because software that wants to look like Windows installs itself inside
+  the Windows directory.
+- **1,864 of 2,000 findings were Windows Update.** Suppressed only when Microsoft signed
+  the writer, so an unknown binary in the update cache is still one of the loudest things
+  the scorer can say, and capped per category so no one category can fill the list again.
+- **33,467 registry observations produced no registry findings at all**, while a
+  comparison tool reported both installed services with their full configuration from the
+  same machine.
+- **A system-wide recording reported zero findings.** There is no subject in one, so
+  nothing is in scope, and narrowing to the subject narrowed to nothing.
+- **The plan and the analysis disagreed about what had been installed.** A program does
+  not install a service, it asks the service control manager to — so the change belongs to
+  another process and scoping to the subject's tree discarded exactly the artifacts that
+  mattered most.
+- **One service was reported twice and one task three times**, because the kernel, the
+  inventory, the registry key and the tree entry each spell the same thing differently.
+- **A scheduled task reported what it is called and never what it runs**, because the
+  registry holds its actions as a binary blob.
+- **Every reassembled conversation named the recording machine as the host contacted.**
+  The canonical flow key orders its endpoints for accumulation, not by which end is local.
+- **Quarantine listed nothing after moving three files**, because the reader was written
+  against an invented journal schema rather than the one the runner writes.
+- **Removal plans proposed certificate stores and shell state.** The crypto API creates a
+  store wherever a component asks for one, so the shape is the rule, not the parent; and
+  Desktop and Documents disappearing from Explorer's sidebar after a removal is worth
+  refusing a whole class over.
+- **`FailureActions` decoded wrongly.** The header is five fields, not four, and the action
+  count routinely overstates. Verified against `sc qfailure` rather than documentation.
+- Long paths pushed the whole page sideways and clipped every card; the tool reported its
+  own tracing buffers as findings; and a startup entry appeared twice in a plan.
+
+### Notes
+
+Loopback conversations are seen as connections but their contents are not captured: the
+Windows packet monitor observes network adapters, and traffic that never leaves the
+machine does not cross one. Use the intercepting proxy for local HTTP.
+
 ## [0.1.0] — 2026-08-12
 
 First public release. One portable executable: a workbench window for the whole workflow, and
@@ -82,4 +182,5 @@ Embedding removal payloads into the executable was tested and rejected: patching
 into a .NET single-file bundle truncated a 67 MB host to 9.6 MB and corrupted it. Packages
 ship as `.ctpkg` sidecars. See [PACKAGE-FORMAT.md](docs/PACKAGE-FORMAT.md).
 
+[0.2.0]: https://github.com/CaYatur/CaYaTrace/releases/tag/v0.2.0
 [0.1.0]: https://github.com/CaYatur/CaYaTrace/releases/tag/v0.1.0

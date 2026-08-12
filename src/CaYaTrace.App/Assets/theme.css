@@ -1207,3 +1207,26 @@ table.data td.wide { max-width: 520px; }
 .agent-status code { font-size: 11px; min-width: 0; }
 
 .btn-small { padding: 3px 9px; font-size: 11px; }
+
+/* ------------------------------------------------------- conversation view */
+
+.convo { border-top: 1px solid var(--border-color); padding: 10px 0; min-width: 0; }
+.convo:first-of-type { border-top: none; }
+.convo-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.convo-proto { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.convo-proc { font-size: 11px; color: var(--text-muted); }
+.convo-facts { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+.convo-summary { font-size: 11px; margin-top: 6px; }
+
+.body-view {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 12px;
+  background: var(--bg-dark);
+  border-radius: 8px;
+  max-height: 50vh;
+  overflow: auto;
+  white-space: pre;
+}

@@ -227,6 +227,105 @@ public static class SessionProjection
         }).ToList(),
     };
 
+    /// <summary>
+    /// The conversations reassembled from the packet capture, with what they carried.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Separate from the flow table because it answers a different question. Flows say
+    /// which endpoints exchanged how many bytes; a conversation says whether this machine
+    /// called out or something called in, whether the peer is on the internet or on the
+    /// same network, what protocol was actually spoken, and where to find the bytes.
+    /// </para>
+    /// <para>
+    /// The peer scope is the reason this exists at all. Traffic to the internet is what
+    /// every tool shows; a program talking to another machine on the local network, or to
+    /// a second copy of itself, is how software coordinates with its own components — and
+    /// it appears in no firewall log, no proxy, and no HTTP stack.
+    /// </para>
+    /// </remarks>
+    private static List<object> BuildConversations(
+        SessionStore store,
+        Dictionary<ProcessKey, ProcessNode> byKey,
+        Func<ProcessKey, bool> owned,
+        ExportRequest request)
+    {
+        var result = new List<object>();
+        if (!request.Allows(EventCategory.Network)) return result;
+
+        foreach (Observation o in store.Query(new ObservationQuery
+                 {
+                     Categories = new List<EventCategory> { EventCategory.Network },
+                 }))
+        {
+            if (o.Source != EvidenceSource.PacketCapture) continue;
+            if (result.Count >= request.NetworkRowLimit) break;
+            if (!owned(o.Actor)) continue;
+            if (o.Details is not { Length: > 0 } details) continue;
+
+            JsonElement facts;
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(details);
+                facts = doc.RootElement.Clone();
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            result.Add(new
+            {
+                seq = o.Seq,
+                when = o.Timestamp,
+                process = o.Actor == ProcessKey.None
+                    ? null
+                    : byKey.TryGetValue(o.Actor, out ProcessNode? node) ? node.ImageName : $"pid {o.Actor.Pid}",
+                pid = o.Actor.Pid,
+                peer = o.Target,
+                name = o.Target2,
+                summary = o.NewValue,
+                bytes = o.Bytes,
+                scope = Text(facts, "scope"),
+                protocol = Text(facts, "protocol"),
+                localPort = Number(facts, "localPort"),
+                inbound = Flag(facts, "inbound"),
+                truncated = Flag(facts, "truncated"),
+
+                // Hashes, not content. A conversation can be megabytes and a session can
+                // hold thousands of them; the bytes are fetched only when somebody opens
+                // one.
+                sentBody = Text(facts, "sentBody"),
+                receivedBody = Text(facts, "receivedBody"),
+                sentBytes = Number(facts, "sentBytes"),
+                receivedBytes = Number(facts, "receivedBytes"),
+                confidence = o.Confidence.ToString(),
+                evidence = Text(facts, "evidence"),
+            });
+        }
+
+        return result;
+    }
+
+    private static string? Text(JsonElement o, string name)
+        => o.ValueKind == JsonValueKind.Object
+           && o.TryGetProperty(name, out JsonElement v)
+           && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
+            : null;
+
+    private static long Number(JsonElement o, string name)
+        => o.ValueKind == JsonValueKind.Object
+           && o.TryGetProperty(name, out JsonElement v)
+           && v.TryGetInt64(out long parsed)
+            ? parsed
+            : 0;
+
+    private static bool Flag(JsonElement o, string name)
+        => o.ValueKind == JsonValueKind.Object
+           && o.TryGetProperty(name, out JsonElement v)
+           && v.ValueKind == JsonValueKind.True;
+
     private static object Project(ScoredArtifact finding) => new
     {
         risk = finding.Risk.ToString(),
@@ -395,6 +494,7 @@ public static class SessionProjection
             flows,
             dns,
             tls,
+            conversations = BuildConversations(store, byKey, Owned, request),
 
             // Both numbers exist so a shorter list is never read as a quieter program.
             unattributed,

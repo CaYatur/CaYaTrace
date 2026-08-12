@@ -464,7 +464,23 @@
     "fleet.stop_service": "Stop service",
     "fleet.confirm_stop_title": "Stop this on the remote machine?",
     "fleet.confirm_stop_body": "The agent checks the target against its own machine before acting, and refuses anything the kernel marks critical.",
-    "fleet.control.unknown": "That request is not something an agent will act on."
+    "fleet.control.unknown": "That request is not something an agent will act on.",
+    "network.tab_conversations": "Conversations",
+    "network.scope.LocalNetwork": "On the local network",
+    "network.scope.LocalNetwork_hint": "Another machine on the same network. This is how software coordinates with its own components, and it appears in no firewall log and no proxy.",
+    "network.scope.Loopback": "On this machine",
+    "network.scope.Loopback_hint": "One process on this machine talking to another. A temporary local server a program opens for its own use shows up here.",
+    "network.scope.Internet": "On the internet",
+    "network.scope.Internet_hint": "A host outside this network.",
+    "network.inbound": "came in",
+    "network.outbound": "went out",
+    "network.local_port": "local port",
+    "network.body_sent": "What it sent",
+    "network.body_received": "What it received",
+    "network.body_title": "Conversation contents — {0}",
+    "network.body_binary": "Not text, so it is shown as bytes.",
+    "network.body_truncated": "Only the beginning was kept. The start of a conversation is where the protocol, the request and the credentials are; the rest is usually payload.",
+    "network.body_unknown": "That content is not in this session."
   },
   "tr": {
     "app.title": "CaYaTrace",
@@ -919,6 +935,22 @@
     "fleet.stop_service": "Servisi durdur",
     "fleet.confirm_stop_title": "Uzak makinede bu durdurulsun mu?",
     "fleet.confirm_stop_body": "Ajan, işlem yapmadan önce hedefi kendi makinesinde doğrular ve çekirdeğin kritik işaretlediği hiçbir şeye dokunmaz.",
-    "fleet.control.unknown": "Bu istek, bir ajanın uygulayacağı türden değil."
+    "fleet.control.unknown": "Bu istek, bir ajanın uygulayacağı türden değil.",
+    "network.tab_conversations": "Konuşmalar",
+    "network.scope.LocalNetwork": "Yerel ağda",
+    "network.scope.LocalNetwork_hint": "Aynı ağdaki başka bir makine. Yazılımın kendi bileşenleriyle haberleşme biçimi budur ve hiçbir güvenlik duvarı günlüğünde ya da vekil sunucuda görünmez.",
+    "network.scope.Loopback": "Bu makinede",
+    "network.scope.Loopback_hint": "Bu makinedeki bir sürecin bir diğeriyle konuşması. Bir programın kendi kullanımı için açtığı geçici yerel sunucu burada görünür.",
+    "network.scope.Internet": "İnternette",
+    "network.scope.Internet_hint": "Bu ağın dışındaki bir sunucu.",
+    "network.inbound": "gelen",
+    "network.outbound": "giden",
+    "network.local_port": "yerel port",
+    "network.body_sent": "Gönderdiği",
+    "network.body_received": "Aldığı",
+    "network.body_title": "Konuşma içeriği — {0}",
+    "network.body_binary": "Metin olmadığı için baytlar hâlinde gösteriliyor.",
+    "network.body_truncated": "Yalnızca başı saklandı. Bir konuşmanın başı; protokolün, isteğin ve kimlik bilgilerinin bulunduğu yerdir, gerisi genellikle veridir.",
+    "network.body_unknown": "Bu içerik bu oturumda yok."
   }
 }

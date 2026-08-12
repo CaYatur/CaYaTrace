@@ -85,9 +85,26 @@ public sealed class Quarantine
 
         foreach (string line in ReadJournalLines())
         {
-            JournalEntry? entry = ParseEntry(line);
-            if (entry?.Quarantine is not { Length: > 0 } held) continue;
-            if (entry.Original is not { Length: > 0 } original) continue;
+            JsonElement entry;
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(line);
+                entry = doc.RootElement.Clone();
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            // Only the file-system entries are things sitting in quarantine. A service
+            // registration and a registry value are exported to a .reg beside them and
+            // are put back a different way.
+            if (Text(entry, "kind") != "filesystem") continue;
+            if (!entry.TryGetProperty("payload", out JsonElement payload)) continue;
+
+            string? held = Text(payload, "quarantined");
+            string? original = Text(payload, "original");
+            if (held is not { Length: > 0 } || original is not { Length: > 0 }) continue;
 
             bool isDirectory = Directory.Exists(held);
             if (!isDirectory && !File.Exists(held)) continue;
@@ -96,7 +113,10 @@ public sealed class Quarantine
             {
                 QuarantinePath = held,
                 OriginalPath = original,
-                MovedAt = entry.At ?? DateTimeOffset.MinValue,
+                MovedAt = entry.TryGetProperty("at", out JsonElement at)
+                          && at.TryGetDateTimeOffset(out DateTimeOffset moved)
+                    ? moved
+                    : DateTimeOffset.MinValue,
                 IsDirectory = isDirectory,
                 SizeBytes = SafeSize(held, isDirectory),
                 CanRestore = !File.Exists(original) && !Directory.Exists(original),
@@ -217,11 +237,12 @@ public sealed class Quarantine
             if (line.Length > 0) yield return line;
     }
 
-    private static JournalEntry? ParseEntry(string line)
-    {
-        try { return JsonSerializer.Deserialize<JournalEntry>(line, Options); }
-        catch (JsonException) { return null; }
-    }
+    private static string? Text(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+           && element.TryGetProperty(name, out JsonElement value)
+           && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private static long SafeSize(string path, bool isDirectory)
     {
@@ -239,15 +260,6 @@ public sealed class Quarantine
         }
     }
 
-    private static readonly JsonSerializerOptions Options = new() { PropertyNameCaseInsensitive = true };
-
-    private sealed record JournalEntry
-    {
-        public string? Action { get; init; }
-        public string? Original { get; init; }
-        public string? Quarantine { get; init; }
-        public DateTimeOffset? At { get; init; }
-    }
 
     /// <summary>A human-readable listing, for the CLI.</summary>
     public string Describe()

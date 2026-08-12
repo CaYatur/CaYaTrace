@@ -924,6 +924,113 @@ public sealed partial class WorkbenchWindow
         empty = reply.Answer.IsEmpty,
     });
 
+    /// <summary>
+    /// Fetches the bytes of one side of one conversation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// On demand rather than in the projection, because a session can hold thousands of
+    /// conversations and any one of them can be megabytes. The projection carries the
+    /// hash; this turns a hash into something readable when somebody opens it.
+    /// </para>
+    /// <para>
+    /// Rendered as text when the bytes are text and as hex when they are not, and bounded
+    /// either way. The content came off the wire and is not to be trusted — it reaches the
+    /// page as an escaped string in a pre-formatted block, never as markup.
+    /// </para>
+    /// </remarks>
+    private void ReadBody(JsonElement payload)
+    {
+        if (_store is null) return;
+
+        string? hash = Str(payload, "hash");
+        if (hash is not { Length: 64 } || !hash.All(Uri.IsHexDigit))
+        {
+            // The page only ever echoes back a hash the projection gave it. Anything
+            // else is not something to go looking for on disk.
+            Toast(Strings.T("network.body_unknown"), "error");
+            return;
+        }
+
+        byte[]? body;
+        try
+        {
+            body = _store.ReadBlob(hash);
+        }
+        catch (Exception ex) when (ex is IOException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            Toast(ex.Message, "error");
+            return;
+        }
+
+        if (body is null)
+        {
+            Toast(Strings.T("network.body_unknown"), "error");
+            return;
+        }
+
+        const int Preview = 64 * 1024;
+        byte[] slice = body.Length <= Preview ? body : body[..Preview];
+
+        bool text = IsMostlyText(slice);
+
+        Post("body", new
+        {
+            hash,
+            bytes = body.Length,
+            truncated = body.Length > slice.Length,
+            kind = text ? "text" : "hex",
+            content = text
+                ? new UTF8Encoding(false, false).GetString(slice)
+                : Hex(slice),
+        });
+    }
+
+    /// <summary>Renders bytes as an offset/hex/ASCII dump, the way they are read.</summary>
+    private static string Hex(byte[] data)
+    {
+        var sb = new StringBuilder(data.Length * 4);
+
+        for (int offset = 0; offset < data.Length; offset += 16)
+        {
+            int run = Math.Min(16, data.Length - offset);
+            sb.Append(offset.ToString("x8")).Append("  ");
+
+            for (int i = 0; i < 16; i++)
+            {
+                sb.Append(i < run ? data[offset + i].ToString("x2") : "  ").Append(' ');
+                if (i == 7) sb.Append(' ');
+            }
+
+            sb.Append(' ');
+            for (int i = 0; i < run; i++)
+            {
+                byte b = data[offset + i];
+                sb.Append(b >= 32 && b < 127 ? (char)b : '.');
+            }
+
+            sb.Append('\n');
+        }
+
+        return sb.ToString();
+    }
+
+    private static bool IsMostlyText(byte[] data)
+    {
+        if (data.Length == 0) return true;
+
+        int length = Math.Min(data.Length, 512);
+        int printable = 0;
+
+        for (int i = 0; i < length; i++)
+        {
+            byte b = data[i];
+            if (b is 9 or 10 or 13 || (b >= 32 && b < 127)) printable++;
+        }
+
+        return printable * 10 >= length * 9;
+    }
+
     private AiReport? _lastReport;
 
     private void PostAiReport(AiReport report)

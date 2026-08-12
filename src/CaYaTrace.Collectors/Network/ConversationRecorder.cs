@@ -197,34 +197,70 @@ public static class ConversationRecorder
                 direction.Append(segment.Sequence, segment.Payload, _limit);
         }
 
+        /// <summary>
+        /// Decides which end is this machine, then reports the conversation from here.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The canonical key orders its two endpoints deterministically so both directions
+        /// of a conversation accumulate into one entry. That ordering has nothing to do
+        /// with which end is this machine, so the canonical "local" address is whichever
+        /// endpoint sorted first — and reading it as local names the operator's own
+        /// machine as the host contacted.
+        /// </para>
+        /// <para>
+        /// Measured: every conversation in a real capture reported the peer as
+        /// <c>192.168.1.180</c>, which was the recording machine, with a local port of 443.
+        /// The tool has made this exact mistake before, in the flow table, and a report
+        /// that names the analyst's own address as the host contacted is the single most
+        /// misleading thing a network view can say.
+        /// </para>
+        /// <para>
+        /// So orientation is decided from the machine's own addresses first and from the
+        /// initiator only as a tie-break — which is what loopback needs, where both ends
+        /// are this machine and only the initiator distinguishes them.
+        /// </para>
+        /// </remarks>
         public Conversation Build(IReadOnlyCollection<IPAddress> localAddresses)
         {
             byte[] outbound = _forward.ToArray();
             byte[] inbound = _reverse.ToArray();
 
-            // Orientation. If the initiator is one of this machine's addresses the local
-            // end reached out; if it is not, something reached in.
-            IPAddress local = _canonical.LocalAddress;
-            IPAddress remote = _canonical.RemoteAddress;
-            bool inboundConnection = false;
+            bool firstIsLocal = localAddresses.Any(a => a.Equals(_canonical.LocalAddress));
+            bool secondIsLocal = localAddresses.Any(a => a.Equals(_canonical.RemoteAddress));
 
-            if (_initiator is not null)
+            // True when the canonical key already has this machine's end first.
+            bool localIsFirst;
+
+            if (firstIsLocal && !secondIsLocal) localIsFirst = true;
+            else if (secondIsLocal && !firstIsLocal) localIsFirst = false;
+            else if (_initiator is not null)
             {
-                bool initiatorIsLocal = localAddresses.Any(a => a.Equals(_initiator));
-                if (!initiatorIsLocal && localAddresses.Any(a => a.Equals(_canonical.RemoteAddress)))
-                {
-                    (local, remote) = (remote, local);
-                    (outbound, inbound) = (inbound, outbound);
-                    inboundConnection = true;
-                }
+                // Both ends are this machine, or neither is. The initiator is the local
+                // end of the conversation as told from here.
+                localIsFirst = _initiator.Equals(_canonical.LocalAddress)
+                               && _initiatorPort == _canonical.LocalPort;
+            }
+            else
+            {
+                localIsFirst = true;
             }
 
-            var key = new FlowKey(
-                _canonical.Protocol,
-                local,
-                local.Equals(_canonical.LocalAddress) ? _canonical.LocalPort : _canonical.RemotePort,
-                remote,
-                remote.Equals(_canonical.RemoteAddress) ? _canonical.RemotePort : _canonical.LocalPort);
+            IPAddress local = localIsFirst ? _canonical.LocalAddress : _canonical.RemoteAddress;
+            ushort localPort = localIsFirst ? _canonical.LocalPort : _canonical.RemotePort;
+            IPAddress remote = localIsFirst ? _canonical.RemoteAddress : _canonical.LocalAddress;
+            ushort remotePort = localIsFirst ? _canonical.RemotePort : _canonical.LocalPort;
+
+            // Which side opened the conversation. Something connecting *in* means this
+            // machine was listening, which is the more interesting of the two.
+            bool inboundConnection = _initiator is not null
+                                     && !(_initiator.Equals(local) && _initiatorPort == localPort);
+
+            // The two streams are held in canonical order; put the local end's first.
+            if (!localIsFirst) (outbound, inbound) = (inbound, outbound);
+            if (inboundConnection) (outbound, inbound) = (inbound, outbound);
+
+            var key = new FlowKey(_canonical.Protocol, local, localPort, remote, remotePort);
 
             (ConversationProtocol protocol, string? sni, string? summary) =
                 Identify(outbound, inbound, key.RemotePort);
@@ -236,10 +272,10 @@ public static class ConversationRecorder
                 Protocol = protocol,
                 First = First,
                 Last = Last,
-                PacketsOut = inboundConnection ? _reverse.Packets : _forward.Packets,
-                PacketsIn = inboundConnection ? _forward.Packets : _reverse.Packets,
-                BytesOut = inboundConnection ? _reverse.Bytes : _forward.Bytes,
-                BytesIn = inboundConnection ? _forward.Bytes : _reverse.Bytes,
+                PacketsOut = localIsFirst ? _forward.Packets : _reverse.Packets,
+                PacketsIn = localIsFirst ? _reverse.Packets : _forward.Packets,
+                BytesOut = localIsFirst ? _forward.Bytes : _reverse.Bytes,
+                BytesIn = localIsFirst ? _reverse.Bytes : _forward.Bytes,
                 Outbound = outbound,
                 Inbound = inbound,
                 Truncated = _forward.Truncated || _reverse.Truncated,

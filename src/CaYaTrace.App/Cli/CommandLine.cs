@@ -122,8 +122,8 @@ public sealed class CommandLine
             WORKBENCH
               --session <dir|file>   Open this session on startup
               --view <name>          Open on a section: overview, capture, sessions,
-                                     findings, tree, network, compare, assistant,
-                                     remediate, fleet
+                                     findings, persistence, timeline, tree,
+                                     network, compare, assistant, remediate, fleet
 
             TRACE
               --target <path>        Program to launch and observe

@@ -101,3 +101,204 @@ public sealed class ConversationTests
 
     private static byte[] Be16(int value) => new[] { (byte)(value >> 8), (byte)(value & 0xFF) };
 }
+
+/// <summary>
+/// Which end of a conversation is this machine.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The canonical flow key orders its endpoints deterministically so both directions
+/// accumulate into one entry, and that ordering has nothing to do with which end is the
+/// recording machine. Reading the canonical "local" address as local names the operator's
+/// own machine as the host contacted.
+/// </para>
+/// <para>
+/// This is the second time the codebase has made that mistake — the flow table made it
+/// first — which is why it is tested against the shape rather than left to review.
+/// </para>
+/// </remarks>
+public sealed class ConversationOrientationTests
+{
+    private static readonly IPAddress Mine = IPAddress.Parse("192.168.1.180");
+    private static readonly IPAddress Server = IPAddress.Parse("93.184.216.34");
+    private static readonly IPAddress Peer = IPAddress.Parse("192.168.1.42");
+
+    /// <summary>Reaching out to a server names the server, whichever way the key sorted.</summary>
+    [Fact]
+    public void AnOutboundConversationNamesTheServerNotThisMachine()
+    {
+        Conversation c = Reassemble(
+            source: Mine, sourcePort: 51000, destination: Server, destinationPort: 443,
+            local: new[] { Mine });
+
+        Assert.Equal(Server, c.Key.RemoteAddress);
+        Assert.Equal(443, c.Key.RemotePort);
+        Assert.Equal(Mine, c.Key.LocalAddress);
+        Assert.Equal(51000, c.Key.LocalPort);
+        Assert.False(c.Inbound_Connection);
+        Assert.Equal(PeerScope.Internet, c.Scope);
+    }
+
+    /// <summary>
+    /// The same conversation with the endpoints the other way round is the same answer.
+    /// </summary>
+    /// <remarks>
+    /// The discriminating case. Both orderings reach the reassembler depending on which
+    /// packet arrived first, and both have to produce a conversation described from this
+    /// machine's point of view.
+    /// </remarks>
+    [Fact]
+    public void TheAnswerDoesNotDependOnWhichPacketArrivedFirst()
+    {
+        Conversation c = Reassemble(
+            source: Server, sourcePort: 443, destination: Mine, destinationPort: 51000,
+            local: new[] { Mine }, synFromSource: false);
+
+        Assert.Equal(Server, c.Key.RemoteAddress);
+        Assert.Equal(Mine, c.Key.LocalAddress);
+    }
+
+    /// <summary>
+    /// Something connecting in means this machine was listening.
+    /// </summary>
+    /// <remarks>
+    /// The more interesting of the two directions, and invisible everywhere else: a
+    /// program that opens a socket and waits is expecting to be found.
+    /// </remarks>
+    [Fact]
+    public void AConnectionFromAnotherMachineIsMarkedInbound()
+    {
+        Conversation c = Reassemble(
+            source: Peer, sourcePort: 60000, destination: Mine, destinationPort: 48231,
+            local: new[] { Mine }, synFromSource: true);
+
+        Assert.True(c.Inbound_Connection);
+        Assert.Equal(Peer, c.Key.RemoteAddress);
+        Assert.Equal(Mine, c.Key.LocalAddress);
+        Assert.Equal(48231, c.Key.LocalPort);
+        Assert.Equal(PeerScope.LocalNetwork, c.Scope);
+    }
+
+    /// <summary>
+    /// Writes a minimal capture and reads it back through the real reader.
+    /// </summary>
+    /// <remarks>
+    /// Through the file rather than by calling the builder directly, because the packet
+    /// parse and the reassembly are the pair that has to agree — and the parse was
+    /// refactored to serve both flow totals and reassembly from one walk.
+    /// </remarks>
+    private static Conversation Reassemble(
+        IPAddress source, ushort sourcePort, IPAddress destination, ushort destinationPort,
+        IPAddress[] local, bool synFromSource = true)
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"cayatrace-convo-{Guid.NewGuid():N}.pcapng");
+
+        try
+        {
+            using (var stream = File.Create(path))
+            {
+                WriteHeaders(stream);
+
+                // The handshake establishes who initiated; the payload gives it content.
+                WritePacket(stream, source, sourcePort, destination, destinationPort,
+                    sequence: 1000, syn: synFromSource, ack: false, payload: Array.Empty<byte>());
+                WritePacket(stream, destination, destinationPort, source, sourcePort,
+                    sequence: 5000, syn: true, ack: true, payload: Array.Empty<byte>());
+                WritePacket(stream, source, sourcePort, destination, destinationPort,
+                    sequence: 1001, syn: false, ack: true,
+                    payload: Encoding.ASCII.GetBytes("GET /probe HTTP/1.1\r\n\r\n"));
+            }
+
+            return Assert.Single(ConversationRecorder.Read(path, local));
+        }
+        finally
+        {
+            try { File.Delete(path); } catch (IOException) { }
+        }
+    }
+
+    private static void WriteHeaders(Stream stream)
+    {
+        // Section header block.
+        Write32(stream, 0x0A0D0D0A);
+        Write32(stream, 28);
+        Write32(stream, 0x1A2B3C4D);
+        Write32(stream, 0x00000001);              // version 1.0
+        Write32(stream, 0xFFFFFFFF);              // section length: unknown
+        Write32(stream, 0xFFFFFFFF);
+        Write32(stream, 28);
+
+        // Interface description block: Ethernet.
+        Write32(stream, 0x00000001);
+        Write32(stream, 20);
+        Write32(stream, 1);                        // link type 1, reserved 0
+        Write32(stream, 0);                        // snap length
+        Write32(stream, 20);
+    }
+
+    private static void WritePacket(
+        Stream stream, IPAddress source, ushort sourcePort, IPAddress destination, ushort destinationPort,
+        uint sequence, bool syn, bool ack, byte[] payload)
+    {
+        byte[] frame = BuildFrame(source, sourcePort, destination, destinationPort, sequence, syn, ack, payload);
+
+        int padded = (frame.Length + 3) / 4 * 4;
+        int blockLength = 32 + padded;
+
+        Write32(stream, 0x00000006);               // enhanced packet block
+        Write32(stream, (uint)blockLength);
+        Write32(stream, 0);                        // interface id
+        Write32(stream, 0);                        // timestamp high
+        Write32(stream, 1);                        // timestamp low
+        Write32(stream, (uint)frame.Length);       // captured
+        Write32(stream, (uint)frame.Length);       // original
+        stream.Write(frame);
+        for (int i = frame.Length; i < padded; i++) stream.WriteByte(0);
+        Write32(stream, (uint)blockLength);
+    }
+
+    private static byte[] BuildFrame(
+        IPAddress source, ushort sourcePort, IPAddress destination, ushort destinationPort,
+        uint sequence, bool syn, bool ack, byte[] payload)
+    {
+        bool v6 = source.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6;
+
+        var tcp = new byte[20 + payload.Length];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(tcp.AsSpan(0), sourcePort);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(tcp.AsSpan(2), destinationPort);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(tcp.AsSpan(4), sequence);
+        tcp[12] = 5 << 4;                          // data offset: 5 words
+        tcp[13] = (byte)((syn ? 0x02 : 0) | (ack ? 0x10 : 0));
+        payload.CopyTo(tcp.AsSpan(20));
+
+        byte[] ip;
+        if (v6)
+        {
+            ip = new byte[40 + tcp.Length];
+            ip[0] = 0x60;
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(ip.AsSpan(4), (ushort)tcp.Length);
+            ip[6] = 6;                             // TCP
+            source.GetAddressBytes().CopyTo(ip.AsSpan(8));
+            destination.GetAddressBytes().CopyTo(ip.AsSpan(24));
+            tcp.CopyTo(ip.AsSpan(40));
+        }
+        else
+        {
+            ip = new byte[20 + tcp.Length];
+            ip[0] = 0x45;
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(ip.AsSpan(2), (ushort)ip.Length);
+            ip[9] = 6;                             // TCP
+            source.GetAddressBytes().CopyTo(ip.AsSpan(12));
+            destination.GetAddressBytes().CopyTo(ip.AsSpan(16));
+            tcp.CopyTo(ip.AsSpan(20));
+        }
+
+        var frame = new byte[14 + ip.Length];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(12), (ushort)(v6 ? 0x86DD : 0x0800));
+        ip.CopyTo(frame.AsSpan(14));
+        return frame;
+    }
+
+    private static void Write32(Stream stream, uint value)
+        => stream.Write(BitConverter.GetBytes(value));
+}

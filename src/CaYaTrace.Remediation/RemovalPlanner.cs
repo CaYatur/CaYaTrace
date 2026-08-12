@@ -93,7 +93,10 @@ public sealed class RemovalPlanner
             if (deleted.Contains(item.Target)) continue;
             if (_options.ExcludeTemporary && IsTemporary(item.Target)) continue;
 
-            string key = $"{item.Kind}|{item.Target}|{item.ValueName}";
+            // A startup entry and a registry value under the same key are the same
+            // deletion, so they share a key and collapse into one item.
+            RemovalKind folded = item.Kind == RemovalKind.AutorunEntry ? RemovalKind.RegistryValue : item.Kind;
+            string key = $"{folded}|{item.Target}|{item.ValueName}";
 
             if (!originsByTarget.TryGetValue(key, out HashSet<string>? origins))
             {
@@ -246,17 +249,38 @@ public sealed class RemovalPlanner
             case EventAction.ValueSet:
             case EventAction.AutorunAdd:
             case EventAction.AutorunModify:
+            {
+                // The inventory writes a startup entry as one "key::value" string while a
+                // registry event reports the key and the value name separately. Both
+                // describe the same value and both produce the same deletion, so they are
+                // reduced to one shape here — otherwise one Run entry appears twice on a
+                // document the operator reads and approves, which inflates the count and
+                // invites them to wonder what the difference is.
+                string target = o.Target;
+                string? valueName = o.Target2;
+
+                if (o.Category == EventCategory.Autorun)
+                {
+                    int marker = target.IndexOf("::", StringComparison.Ordinal);
+                    if (marker >= 0)
+                    {
+                        valueName = target[(marker + 2)..];
+                        target = target[..marker];
+                    }
+                }
+
                 return new RemovalItem
                 {
                     Kind = o.Category == EventCategory.Autorun ? RemovalKind.AutorunEntry : RemovalKind.RegistryValue,
-                    Target = o.Target,
-                    ValueName = o.Target2,
+                    Target = target,
+                    ValueName = valueName,
                     Rationale = o.OldValue is null
                         ? $"set by {who}"
                         : $"changed by {who} from '{Truncate(o.OldValue)}'",
                     Fingerprint = new ArtifactFingerprint { ValueData = o.NewValue },
                     Evidence = { o.Seq },
                 };
+            }
 
             case EventAction.KeyCreate:
                 return new RemovalItem

@@ -415,7 +415,7 @@ const state = {
   persistence: [],
   timeline: [],
   roots: [],
-  network: { requests: [], flows: [], dns: [], tls: [] },
+  network: { requests: [], conversations: [], flows: [], dns: [], tls: [] },
   processes: [],
 
   /* Conversation view: the reader chooses what to read, not the tool. */
@@ -1162,10 +1162,21 @@ function renderDetail(node) {
 
 const NETWORK_TABS = [
   { id: 'requests', key: 'network.tab_requests' },
+  { id: 'conversations', key: 'network.tab_conversations' },
   { id: 'flows', key: 'network.tab_flows' },
   { id: 'dns', key: 'network.tab_dns' },
   { id: 'tls', key: 'network.tab_tls' },
 ];
+
+/*
+ * Where the other end of a conversation is, in the order that matters to a reader.
+ *
+ * Grouped rather than listed flat because the grouping is the finding. Every tool shows
+ * traffic to the internet; a program talking to another machine on the same network, or
+ * to a second copy of itself over loopback, is how software coordinates with its own
+ * components — and it appears in no firewall log and no proxy.
+ */
+const PEER_SCOPES = ['LocalNetwork', 'Loopback', 'Internet'];
 
 function renderNetwork() {
   const tabs = document.getElementById('networkTabs');
@@ -1209,6 +1220,11 @@ function renderNetwork() {
       t('network.unattributed_note', formatNumber(state.network.unattributed))));
   }
   if (state.network.truncated) host.appendChild(el('div', 'hint', t('network.truncated_note')));
+
+  if (state.networkTab === 'conversations') {
+    renderConversations(host, rows);
+    return;
+  }
 
   if (state.networkTab === 'requests') {
     host.appendChild(table(
@@ -2313,7 +2329,7 @@ function load(data) {
   state.findings = data.findings || [];
   state.counts = data.counts || {};
   state.totalObservations = data.totalObservations || 0;
-  state.network = Object.assign({ requests: [], flows: [], dns: [], tls: [] }, data.network || {});
+  state.network = Object.assign({ requests: [], conversations: [], flows: [], dns: [], tls: [] }, data.network || {});
 
   // Open on a tab that has something in it. Landing on an empty HTTP table when the
   // evidence is in Connections makes the session look emptier than it is.
@@ -2343,6 +2359,70 @@ function load(data) {
   // alone, because it was chosen.
   if (!state.pinnedView && (!bridge.live || state.view === 'capture' || state.view === 'sessions'))
     setView('overview');
+}
+
+/*
+ * What was actually said on the wire, grouped by where the other end is.
+ *
+ * This is the only view that sees a program talking to a peer rather than to a server:
+ * the HTTP stacks report what goes through them and the intercepting proxy reads what is
+ * routed to it, and a program that opens its own socket and speaks its own protocol to
+ * another machine is invisible to both.
+ */
+function renderConversations(host, rows) {
+  const byScope = {};
+  rows.forEach(r => {
+    const scope = r.scope || 'Internet';
+    (byScope[scope] = byScope[scope] || []).push(r);
+  });
+
+  const order = PEER_SCOPES.filter(s => byScope[s]).concat(
+    Object.keys(byScope).filter(s => !PEER_SCOPES.includes(s)));
+
+  order.forEach(scope => {
+    const card = el('div', 'card');
+    card.appendChild(el('h3', null, t('network.scope.' + scope) || scope));
+    card.appendChild(el('div', 'hint', t('network.scope.' + scope + '_hint') || ''));
+
+    byScope[scope].forEach(r => card.appendChild(renderConversation(r)));
+    host.appendChild(card);
+  });
+}
+
+function renderConversation(r) {
+  const box = el('div', 'convo');
+
+  const head = el('div', 'convo-head');
+  head.appendChild(el('span', 'tag', r.inbound ? t('network.inbound') : t('network.outbound')));
+  head.appendChild(el('strong', null, r.name && r.name !== r.protocol ? r.name : r.peer));
+  if (r.protocol) head.appendChild(el('span', 'convo-proto', r.protocol));
+  if (r.process) head.appendChild(el('span', 'convo-proc', r.process + ' (' + r.pid + ')'));
+  box.appendChild(head);
+
+  const facts = [];
+  facts.push(r.peer);
+  if (r.localPort) facts.push(t('network.local_port') + ' ' + r.localPort);
+  facts.push(formatBytes(r.bytes || 0));
+  box.appendChild(el('div', 'convo-facts', facts.join(' · ')));
+
+  if (r.summary) box.appendChild(el('code', 'wrap-any convo-summary', r.summary));
+  if (r.truncated) box.appendChild(el('div', 'hint', t('network.body_truncated')));
+
+  const actions = el('div', 'row tight wrap');
+  actions.style.marginTop = '8px';
+
+  [['sentBody', 'sentBytes', 'network.body_sent'], ['receivedBody', 'receivedBytes', 'network.body_received']]
+    .forEach(([hashField, sizeField, key]) => {
+      if (!r[hashField]) return;
+      const b = el('button', 'btn btn-ghost btn-small',
+        t(key) + ' · ' + formatBytes(r[sizeField] || 0));
+      b.type = 'button';
+      b.onclick = () => bridge.send('readBody', { hash: r[hashField] });
+      actions.appendChild(b);
+    });
+
+  if (actions.childElementCount) box.appendChild(actions);
+  return box;
 }
 
 /* ============================================================ persistence */
@@ -2974,6 +3054,25 @@ function wireBridge() {
   bridge.on('compare', payload => { state.compare.result = payload; renderCompare(); });
   bridge.on('plan', payload => { state.plan = payload; renderPlan(); });
   bridge.on('fleet', payload => { state.fleet = payload; renderFleet(); });
+
+  bridge.on('body', payload => {
+    // Content that came off the wire. It reaches the page as text set on a pre-formatted
+    // element, never as markup, and it is shown in a dialog rather than inline so a
+    // megabyte of protocol does not displace the conversation list behind it.
+    const pre = el('pre', 'body-view');
+    pre.textContent = payload.content || '';
+
+    const extra = el('div');
+    extra.appendChild(wrapScroll(pre));
+    if (payload.truncated) extra.appendChild(el('div', 'hint', t('network.body_truncated')));
+
+    showModal({
+      title: t('network.body_title', formatBytes(payload.bytes || 0)),
+      body: payload.kind === 'hex' ? t('network.body_binary') : '',
+      extra,
+      actions: [{ label: t('common.close') }],
+    });
+  });
 
   bridge.on('fleetAgent', payload => {
     state.agent = Object.assign(state.agent, payload);

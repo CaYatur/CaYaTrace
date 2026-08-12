@@ -161,6 +161,15 @@ public sealed class SafetyPolicy
         "EnterpriseCertificates",
         "Trust Providers",
         "CertificateTransparency",
+
+        // The store layout itself. The crypto API creates a key with these three
+        // children wherever a component asks for its own store, so the parent name
+        // varies without limit while the shape does not — measured, after a plan
+        // proposed deleting six of them under two parents nobody would have predicted:
+        // a background-transfer task's class id, and the package state repository.
+        "Certificates",
+        "CRLs",
+        "CTLs",
     };
 
     /// <summary>
@@ -245,6 +254,12 @@ public sealed class SafetyPolicy
         @"%APPDATA%\Microsoft\Windows\Recent",
         @"%PROGRAMDATA%\Microsoft\Windows\Caches",
         @"%PROGRAMDATA%\Microsoft\Windows Defender",
+
+        // PowerShell's own startup profile cache. Written by the shell whenever it runs,
+        // so anything launched through PowerShell — which is most scripted installs —
+        // appears to have created it. Observed in a real plan.
+        @"%LOCALAPPDATA%\Microsoft\Windows\PowerShell",
+        @"%APPDATA%\Microsoft\Windows\PowerShell",
     };
 
     /// <summary>

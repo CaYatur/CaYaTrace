@@ -38,6 +38,18 @@ public sealed partial class WorkbenchWindow : Form
     /// <summary>Section to open on, from <c>--view</c>. Null lets the page decide.</summary>
     public string? InitialView { get; init; }
 
+    /// <summary>
+    /// When set, the workbench renders the requested view to a PNG and exits.
+    /// </summary>
+    /// <remarks>
+    /// Captured through WebView2's own preview API rather than off the screen. Copying
+    /// from the screen device context requires the window to be visible and in front,
+    /// which on a machine somebody is using means the image is whatever they happened
+    /// to have open — measured, and it captured a browser session. This path never
+    /// reads the screen, so it cannot photograph anything but this page.
+    /// </remarks>
+    public string? ScreenshotPath { get; init; }
+
     public WorkbenchWindow(string? sessionPath, UserSettings settings)
     {
         _initialSession = sessionPath;
@@ -138,6 +150,35 @@ public sealed partial class WorkbenchWindow : Form
 
     private void Toast(string text, string? kind = null) => Post("toast", new { text, kind });
 
+    /// <summary>Renders the current view to a PNG and closes the window.</summary>
+    private async Task CaptureAndExitAsync(string path)
+    {
+        // The session projection and the first paint both land after "ready". Capturing
+        // immediately produces a picture of an empty shell.
+        await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(true);
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+
+            using var stream = new MemoryStream();
+            await _view.CoreWebView2
+                .CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, stream)
+                .ConfigureAwait(true);
+
+            await File.WriteAllBytesAsync(path, stream.ToArray()).ConfigureAwait(true);
+            Console.WriteLine(Path.GetFullPath(path));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            Console.Error.WriteLine($"cayatrace: could not write {path}: {ex.Message}");
+        }
+        finally
+        {
+            Close();
+        }
+    }
+
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         string raw;
@@ -179,6 +220,7 @@ public sealed partial class WorkbenchWindow : Form
             case "ready":
                 SendBoot();
                 if (_initialSession is not null) LoadSession(_initialSession);
+                if (ScreenshotPath is not null) _ = CaptureAndExitAsync(ScreenshotPath);
                 break;
 
             case "setLanguage":

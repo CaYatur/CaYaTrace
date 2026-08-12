@@ -44,10 +44,32 @@ public static class WorkbenchMode
 
         string? session = cmd.Get("session") ?? cmd.Positional.FirstOrDefault();
 
-        // --view opens straight into a section. Useful for a shortcut that always lands
-        // on Capture, and it is what makes the workbench screenshottable without
-        // driving the mouse.
-        using var window = new WorkbenchWindow(session, settings) { InitialView = cmd.Get("view") };
+        // --view opens straight into a section; --screenshot renders that section to a
+        // PNG and exits, which is how the documentation images are produced.
+        string? screenshot = cmd.Get("screenshot");
+
+        using var window = new WorkbenchWindow(session, settings)
+        {
+            InitialView = cmd.Get("view"),
+            ScreenshotPath = screenshot,
+        };
+
+        if (screenshot is not null)
+        {
+            // Off-screen and unfocused. Capture goes through WebView2's own preview API,
+            // so the window never needs to be seen — and a documentation build should
+            // not steal focus from whoever is using the machine.
+            window.StartPosition = System.Windows.Forms.FormStartPosition.Manual;
+            window.Location = new System.Drawing.Point(-32000, -32000);
+            window.ShowInTaskbar = false;
+
+            // Sized in device pixels, while the page lays out in CSS pixels. On a 150%
+            // display a 1440-pixel window is a 960-pixel viewport, which trips the
+            // narrow-window rule and collapses the navigation to icons — an image that
+            // documents a layout the reader will probably never see.
+            window.Size = new System.Drawing.Size(2200, 1400);
+        }
+
         System.Windows.Forms.Application.Run(window);
         return 0;
     }

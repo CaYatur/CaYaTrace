@@ -197,6 +197,23 @@ public sealed class FlowTable
             return existing;
         }
 
+        // A conversation already known in the other orientation is the same
+        // conversation. This matters because the kernel's per-packet events and its
+        // connect event do not agree on which endpoint is the source, so without this a
+        // single HTTP fetch produced two flow records: one correct, and one whose
+        // "remote" endpoint was the machine's own address on an ephemeral port. The
+        // second is not merely a duplicate — it is a report telling an analyst that the
+        // program connected to their own machine, and it split the byte totals across
+        // two rows so neither was right either.
+        //
+        // The connect and accept events establish orientation; everything else attaches
+        // to what they established.
+        if (_flows.TryGetValue(key.Reversed(), out NetworkFlow? reversed))
+        {
+            reversed.LastSeen = Max(reversed.LastSeen, when);
+            return reversed;
+        }
+
         if (_flows.Count >= _maxFlows)
             EvictLocked();
 
@@ -205,9 +222,12 @@ public sealed class FlowTable
         return flow;
     }
 
+    /// <summary>
+    /// The flow for this conversation, in whichever orientation it was first seen.
+    /// </summary>
     public NetworkFlow? Find(FlowKey key)
     {
-        lock (_gate) return _flows.GetValueOrDefault(key);
+        lock (_gate) return _flows.GetValueOrDefault(key) ?? _flows.GetValueOrDefault(key.Reversed());
     }
 
     public void NoteBytes(FlowKey key, DateTimeOffset when, long sent, long received, long packetsSent = 0, long packetsReceived = 0)
@@ -227,8 +247,8 @@ public sealed class FlowTable
     {
         lock (_gate)
         {
-            if (_flows.TryGetValue(key, out NetworkFlow? flow))
-                flow.ClosedAt = when;
+            NetworkFlow? flow = _flows.GetValueOrDefault(key) ?? _flows.GetValueOrDefault(key.Reversed());
+            if (flow is not null) flow.ClosedAt = when;
         }
     }
 

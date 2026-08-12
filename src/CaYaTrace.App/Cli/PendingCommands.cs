@@ -95,7 +95,7 @@ public static class AgentCommand
 
         try
         {
-            return Modes.FleetAgentRunner
+            return App.Fleet.FleetAgentRunner
                 .RunAsync(host, port, code, sessionRoot, cancellation.Token)
                 .GetAwaiter().GetResult();
         }

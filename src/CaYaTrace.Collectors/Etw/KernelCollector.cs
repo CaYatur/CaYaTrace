@@ -321,10 +321,11 @@ public sealed class KernelCollector : ICollector
             // severity sits at the top of every report and trains the reader to skip
             // the section.
             //
-            // Two exclusions, both measured against real captures:
+            // The exclusions here are the structural ones only — facts available at event
+            // time that can never become truer later:
             //
-            //   * An owning process id of 0. That is a thread the kernel could not
-            //     attribute, not one belonging to the idle process. It produced
+            //   * A process id at or below 4. Those are the idle and system processes,
+            //     where the kernel's own threads land. This produced
             //     "REMOTE THREAD Idle (0)" as the two highest-ranked findings of a
             //     252,000-event session.
             //
@@ -333,11 +334,26 @@ public sealed class KernelCollector : ICollector
             //     without the exclusion reports every CreateProcess as injection — five
             //     critical findings in a session whose subject started five programs,
             //     all of them ordinary.
-            if (data.ProcessID > 0 && data.ParentProcessID > 0 && data.ParentProcessID != data.ProcessID)
+            //
+            //   * Either end unresolvable. Naming a process this session never saw start
+            //     is a guess, and a guess at critical severity is worse than silence.
+            //
+            // Whether this is worth reporting is decided later, by the scorer, and
+            // deliberately not here. The judgment needs code signatures, which are
+            // verified on a background thread and are usually not populated yet at the
+            // moment a thread starts — deciding here would be deciding on missing data.
+            // Discarding here would also be permanent, and a suppression rule that turns
+            // out to be wrong should be re-judgeable against a session already recorded.
+            if (data.ProcessID > 4 && data.ParentProcessID > 4 && data.ParentProcessID != data.ProcessID)
             {
                 ProcessKey injector = ResolveActor(ctx, data.ParentProcessID, data.TimeStamp);
                 if (injector == ProcessKey.None || injector == owner) return;
                 if (IsProcessStartup(ctx, owner, data.TimeStamp)) return;
+
+                ProcessNode? injectorNode = ctx.Processes.Get(injector);
+                ProcessNode? ownerNode = ctx.Processes.Get(owner);
+                if (injectorNode is null || ownerNode is null) return;
+                if (injectorNode.Pid <= 4 || ownerNode.Pid <= 4) return;
 
                 ctx.Emit(new Observation
                 {
@@ -348,6 +364,16 @@ public sealed class KernelCollector : ICollector
                     ThreadId = (uint)data.ThreadID,
                     Target = DescribeProcess(ctx, owner),
                     Target2 = $"0x{data.Win32StartAddr:x}",
+
+                    // Carried so the finding can say who did it, not only to whom. An
+                    // injection finding that names only the victim is half a sentence.
+                    NewValue = $"{injectorNode.ImageName} ({injectorNode.Pid})",
+
+                    // The owning process, in a form the scorer can look back up. Both
+                    // ends have to be identifiable to judge whether this is Windows
+                    // going about its business or something putting code where it does
+                    // not belong.
+                    Details = $"{{\"owner\":\"{owner}\"}}",
                     Source = EvidenceSource.KernelEtw,
                     Confidence = AttributionConfidence.Direct,
                     Status = EventStatus.Success,

@@ -148,6 +148,42 @@ public static class RegistryPath
     /// only by <c>WOW6432Node</c> are the same logical setting seen through different
     /// registry views, and comparison across machines should treat them as such.
     /// </summary>
+    /// <summary>
+    /// Rewrites a numbered control set to <c>CurrentControlSet</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Necessary because the two halves of this tool see different spellings of the same
+    /// key. Kernel events report the real path — <c>HKLM\SYSTEM\ControlSet001\Services\…</c> —
+    /// while every rule anyone writes, and every path a person types, says
+    /// <c>CurrentControlSet</c>. A rule table written the readable way matches nothing at all
+    /// against real evidence.
+    /// </para>
+    /// <para>
+    /// This has already caused one shipped defect: the removal policy's protected-service
+    /// list matched no service on the machine, because the list said
+    /// <c>CurrentControlSet</c> and every observation said <c>ControlSet001</c>. It lives here
+    /// rather than in either caller so there is one answer to the question.
+    /// </para>
+    /// </remarks>
+    public static string CanonicalizeControlSet(string? normalized)
+    {
+        if (normalized is null) return string.Empty;
+
+        const string prefix = @"HKLM\SYSTEM\ControlSet";
+        if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return normalized;
+
+        int i = prefix.Length;
+        while (i < normalized.Length && char.IsAsciiDigit(normalized[i])) i++;
+
+        // Must be digits followed by a separator or the end, so "ControlSetFoo" is left
+        // alone rather than silently rewritten.
+        if (i == prefix.Length) return normalized;
+        if (i < normalized.Length && normalized[i] != '\\') return normalized;
+
+        return @"HKLM\SYSTEM\CurrentControlSet" + normalized[i..];
+    }
+
     public static bool IsWow64Redirected(string? normalized)
         => normalized is not null
            && normalized.Contains(@"\WOW6432Node", StringComparison.OrdinalIgnoreCase);

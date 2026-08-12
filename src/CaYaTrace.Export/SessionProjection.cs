@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CaYaTrace.Analysis;
+using CaYaTrace.Analysis.Persistence;
 using CaYaTrace.Core.Correlation;
 using CaYaTrace.Core.Graph;
 using CaYaTrace.Core.Model;
@@ -68,12 +69,24 @@ public static class SessionProjection
         // Findings are computed from the same rules the CLI uses, and deliberately
         // without a model: an exported report must be reproducible by anyone who opens
         // it, and must never imply a model saw data it did not.
-        IReadOnlyList<ScoredArtifact> findings = new ArtifactScorer()
+        //
+        // The process table is handed in because two of the rules — whether a
+        // cross-process thread is Windows going about its business, and whether a write
+        // into an OS-managed cache is the OS doing it — turn on who signed the code, and
+        // that is only knowable from the process record.
+        IReadOnlyList<ScoredArtifact> findings = new ArtifactScorer(processLookup: byKey.GetValueOrDefault)
             .TopFindings(store.Query().Where(Included), request.FindingLimit);
 
         object[] tree = request.IncludeTree
             ? BuildTree(store, session, processes, flows, request)
             : Array.Empty<object>();
+
+        // Persistence is computed over everything, not over the filtered stream. An entry
+        // that survives a reboot is the single most important thing a session can find,
+        // and narrowing the input to the subject's own process tree would lose the ones
+        // installed by a helper the subject launched and then stopped.
+        IReadOnlyList<PersistenceRecord> persistence = new PersistenceAnalyzer(byKey.GetValueOrDefault)
+            .Analyze(store.Query());
 
         return new
         {
@@ -86,6 +99,37 @@ public static class SessionProjection
                 .ToDictionary(static kv => kv.Key.ToString(), static kv => kv.Value),
             totalObservations = store.CountObservations(),
             findings = findings.Select(Project).ToList(),
+            persistence = persistence.Select(r => ProjectPersistence(r, byKey)).ToList(),
+            timeline = new ProcessTimeline()
+                .Build(nodes, store.Query(), persistence, session.RootProcess)
+                .Select(static e => new
+                {
+                    pid = e.Pid,
+                    parent = e.ParentPid,
+                    name = e.Name,
+                    path = e.Path,
+                    commandLine = e.CommandLine,
+                    user = e.User,
+                    started = e.Started,
+                    exited = e.Exited,
+                    exitCode = e.ExitCode,
+                    seconds = e.Lifetime?.TotalSeconds,
+                    depth = e.Depth,
+                    inScope = e.InScope,
+                    preExisting = e.PreExisting,
+                    elevated = e.IsElevated,
+                    signature = e.Signature.ToString(),
+                    signer = e.Signer,
+                    sha256 = e.Sha256,
+                    files = e.FilesWritten,
+                    registry = e.RegistryChanges,
+                    modules = e.ModulesLoaded,
+                    connections = e.Connections,
+                    children = e.ChildrenStarted,
+                    installed = e.Installed,
+                    notes = e.Notes,
+                })
+                .ToList(),
             tree,
             network = BuildNetwork(store, byKey, inScope, storedFlows, request),
             processes = nodes
@@ -136,6 +180,45 @@ public static class SessionProjection
             .Cast<object>()
             .ToArray();
     }
+
+    /// <summary>
+    /// One way the subject arranged to run again, with everything known about it.
+    /// </summary>
+    /// <remarks>
+    /// The values are carried in full rather than summarised. A service entry that names
+    /// only its image path is the shape this used to have, and it is the shape that let a
+    /// comparison tool describe the same service better than we could from the same
+    /// evidence: the display name, start type, account and recovery actions were all
+    /// recorded and none of them reached the reader.
+    /// </remarks>
+    private static object ProjectPersistence(
+        PersistenceRecord record, Dictionary<ProcessKey, ProcessNode> byKey) => new
+    {
+        kind = record.Kind.ToString(),
+        identity = record.Identity,
+        location = record.Location,
+        command = record.Command,
+        displayName = record.DisplayName,
+        risk = record.Risk.ToString(),
+        score = record.Score,
+        traits = record.Traits,
+        reasons = record.Reasons,
+        isNew = record.IsNew,
+        restartsItself = record.RestartsItself,
+        firstSeen = record.FirstSeen == default ? (DateTimeOffset?)null : record.FirstSeen,
+        installedBy = record.Actor == ProcessKey.None
+            ? null
+            : byKey.TryGetValue(record.Actor, out ProcessNode? node) ? node.ImageName : $"pid {record.Actor.Pid}",
+        source = record.Source.ToString(),
+        confidence = record.Confidence.ToString(),
+        values = record.Values.Select(static v => new
+        {
+            name = v.Name,
+            data = v.Data,
+            previous = v.Previous,
+            source = v.Source.ToString(),
+        }).ToList(),
+    };
 
     private static object Project(ScoredArtifact finding) => new
     {

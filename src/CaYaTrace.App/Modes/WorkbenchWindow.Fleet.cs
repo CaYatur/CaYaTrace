@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
+using CaYaTrace.App.Fleet;
 using CaYaTrace.Core.Model;
 using CaYaTrace.Fleet;
 using CaYaTrace.Storage;
@@ -30,6 +32,10 @@ public sealed partial class WorkbenchWindow
         var host = new FleetHost();
         host.Changed += () => Post("fleet", BuildFleetState());
         host.BatchReceived += OnAgentBatch;
+        host.ProcessesReceived += OnAgentProcesses;
+        host.FlowsReceived += OnAgentFlows;
+        host.SummaryReceived += OnAgentSummary;
+        host.ControlCompleted += OnAgentControlResult;
         host.Notice += (agent, message) => Toast($"{agent.Describe()}: {message}", "error");
 
         try
@@ -74,29 +80,194 @@ public sealed partial class WorkbenchWindow
         PostFleetState();
     }
 
-    private void FleetCollect(bool start)
+    /// <summary>
+    /// Starts or stops recording, on one machine or on all of them.
+    /// </summary>
+    /// <remarks>
+    /// The order carries the same category choices the local capture screen offers, so a
+    /// remote recording and a local one mean the same thing and can be compared. Packet
+    /// capture and HTTPS interception are still deliberately absent: a host that could
+    /// switch them on remotely turns a paired agent into a remote administration channel,
+    /// and both change the machine they run on.
+    /// </remarks>
+    private void FleetCollect(bool start, string? agentId, JsonElement request)
     {
         if (_fleetHost is null) return;
 
         if (start)
         {
-            // Deliberately a bare order. Packet capture and HTTPS interception are not
-            // fields on this record — a host that could switch them on remotely turns a
-            // paired agent into a remote administration channel, and both change the
-            // machine they run on.
-            _fleetHost.StartCollection(new CollectionOrder
+            var order = new CollectionOrder
             {
                 DurationSeconds = 0,
-                CaptureSnapshots = true,
-            });
+                TargetPath = Str(request, "targetPath"),
+                TargetArguments = Str(request, "targetArguments"),
+                CaptureSnapshots = Bool(request, "snapshots", true),
+                CollectReads = Bool(request, "reads", false),
+                CollectFile = Bool(request, "file", true),
+                CollectRegistry = Bool(request, "registry", true),
+                CollectNetwork = Bool(request, "network", true),
+                CollectImageLoad = Bool(request, "modules", true),
+                CollectNetworkMetadata = Bool(request, "networkMetadata", true),
+                DropOutOfScope = Bool(request, "subjectOnly", false),
+            };
+
+            if (agentId is { Length: > 0 }) _fleetHost.StartCollection(agentId, order);
+            else _fleetHost.StartCollection(order);
         }
         else
         {
-            _fleetHost.StopCollection();
+            if (agentId is { Length: > 0 }) _fleetHost.StopCollection(agentId);
+            else _fleetHost.StopCollection();
         }
 
         PostFleetState();
     }
+
+    /// <summary>Asks one machine for a live sample, optionally the whole process list.</summary>
+    private void FleetInspect(string? agentId, bool full)
+    {
+        if (agentId is null) return;
+        _fleetHost?.RequestTelemetry(agentId, full);
+    }
+
+    /// <summary>
+    /// Asks a machine to stop something.
+    /// </summary>
+    /// <remarks>
+    /// The host names what it believes it is acting on and the agent re-checks that
+    /// against its own machine before doing anything, because the list this was clicked
+    /// from is seconds old and process ids are recycled in seconds.
+    /// </remarks>
+    private void FleetControl(string? agentId, JsonElement request)
+    {
+        if (agentId is null || _fleetHost is null) return;
+
+        string action = Str(request, "action") ?? string.Empty;
+        AgentControlAction resolved = action switch
+        {
+            "stop" => AgentControlAction.StopProcess,
+            "stopTree" => AgentControlAction.StopProcessTree,
+            "stopService" => AgentControlAction.StopService,
+            "disableService" => AgentControlAction.DisableServiceAutostart,
+            _ => AgentControlAction.StopProcess,
+        };
+
+        if (action is not ("stop" or "stopTree" or "stopService" or "disableService"))
+        {
+            Toast(Strings.T("fleet.control.unknown"), "error");
+            return;
+        }
+
+        _fleetHost.SendControl(agentId, new ControlRequest
+        {
+            RequestId = Guid.NewGuid().ToString("N")[..8],
+            Action = resolved,
+            Pid = (uint)Math.Max(0, Int(request, "pid")),
+            ServiceName = Str(request, "service"),
+            ExpectedName = Str(request, "name"),
+        });
+    }
+
+    // ------------------------------------------------------------- agent side
+
+    private CancellationTokenSource? _agentCancellation;
+    private Task? _agentTask;
+    private string _agentState = "idle";
+    private string _agentMessage = string.Empty;
+
+    /// <summary>
+    /// Joins a fleet as an agent.
+    /// </summary>
+    /// <remarks>
+    /// The half that was missing: the host screen existed and the agent side was
+    /// command-line only, so a machine could host a fleet from the window but could only
+    /// join one from a terminal — on the analysis VM, which is the machine least likely
+    /// to have one open.
+    /// </remarks>
+    private async Task FleetJoinAsync(JsonElement request)
+    {
+        if (_agentTask is { IsCompleted: false })
+        {
+            Toast(Strings.T("fleet.agent.already"), "error");
+            return;
+        }
+
+        string host = Str(request, "host") ?? string.Empty;
+        int port = Int(request, "port");
+        string code = Str(request, "code") ?? string.Empty;
+
+        if (host.Length == 0 || code.Length == 0)
+        {
+            Toast(Strings.T("fleet.agent.needs_host"), "error");
+            return;
+        }
+
+        _agentCancellation = new CancellationTokenSource();
+        CancellationToken token = _agentCancellation.Token;
+
+        void Report(AgentProgress progress)
+        {
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(() => Report(progress)); }
+                catch (ObjectDisposedException) { }
+                catch (InvalidOperationException) { }
+                return;
+            }
+
+            _agentState = progress.State;
+            _agentMessage = progress.Message;
+            PostAgentState();
+        }
+
+        _agentState = "connecting";
+        _agentMessage = string.Empty;
+        PostAgentState();
+
+        string root = _settings.SessionRoot ?? UserSettings.DefaultSessionRoot;
+
+        _agentTask = Task.Run(() => FleetAgentRunner.RunAsync(
+            host, port > 0 ? port : _settings.FleetPort, code, root, Report, token), token);
+
+        try
+        {
+            await _agentTask.ConfigureAwait(true);
+            _agentState = "idle";
+            _agentMessage = Strings.T("fleet.agent.disconnected");
+        }
+        catch (OperationCanceledException)
+        {
+            _agentState = "idle";
+            _agentMessage = Strings.T("fleet.agent.disconnected");
+        }
+        catch (Exception ex) when (ex is ChannelException or System.Net.Sockets.SocketException or IOException)
+        {
+            _agentState = "error";
+
+            // A wrong code and a wrong address fail identically here, and saying so saves
+            // the operator from re-reading the code when the address is what is wrong.
+            _agentMessage = ex is ChannelException
+                ? Strings.T("fleet.agent.handshake_failed")
+                : ex.Message;
+        }
+
+        PostAgentState();
+    }
+
+    private void FleetLeave()
+    {
+        _agentCancellation?.Cancel();
+        _agentState = "idle";
+        _agentMessage = Strings.T("fleet.agent.disconnected");
+        PostAgentState();
+    }
+
+    private void PostAgentState() => Post("fleetAgent", new
+    {
+        state = _agentState,
+        message = _agentMessage,
+        connected = _agentTask is { IsCompleted: false },
+    });
 
     private void PostFleetState() => Post("fleet", BuildFleetState());
 
@@ -126,6 +297,14 @@ public sealed partial class WorkbenchWindow
                 machine = a.Hello?.MachineName ?? a.Id,
                 describe = a.Describe(),
                 fingerprint = a.Fingerprint,
+                os = a.Hello?.OsBuild,
+                architecture = a.Hello?.Architecture,
+                virtualMachine = a.Hello?.IsVirtualMachine ?? false,
+                hypervisor = a.Hello?.Hypervisor,
+                elevated = a.Hello?.IsElevated ?? false,
+                toolVersion = a.Hello?.ToolVersion,
+                connectedAt = a.ConnectedAt,
+                sessions = a.SessionsCompleted,
                 state = a.State switch
                 {
                     AgentState.Pending => "pending",
@@ -136,9 +315,39 @@ public sealed partial class WorkbenchWindow
                     _ => "gone",
                 },
                 events = a.EventsReceived,
+                processesTransferred = a.ProcessesReceived,
+                flowsTransferred = a.FlowsReceived,
+                live = a.Telemetry is null ? null : new
+                {
+                    at = a.Telemetry.SampledAt,
+                    recording = a.Telemetry.Recording,
+                    recorded = a.Telemetry.EventsRecorded,
+                    dropped = a.Telemetry.EventsDropped,
+                    processCount = a.Telemetry.ProcessCount,
+                    memoryUsed = a.Telemetry.MemoryUsedBytes,
+                    memoryTotal = a.Telemetry.MemoryTotalBytes,
+                    started = a.Telemetry.Started.Select(Describe).ToList(),
+                    exited = a.Telemetry.Exited.Select(Describe).ToList(),
+                    processes = a.Telemetry.Processes?.Select(Describe).ToList(),
+                },
             }).ToList(),
         };
     }
+
+    private static object Describe(AgentProcessSample p) => new
+    {
+        pid = p.Pid,
+        parent = p.ParentPid,
+        name = p.Name,
+        path = p.Path,
+        commandLine = p.CommandLine,
+        user = p.User,
+        started = p.Started,
+        memory = p.WorkingSetBytes,
+        threads = p.ThreadCount,
+        critical = p.IsCritical,
+        services = p.ServiceNames,
+    };
 
     /// <summary>
     /// The address an agent on the lab network should connect back to.
@@ -176,7 +385,7 @@ public sealed partial class WorkbenchWindow
     }
 
     /// <summary>
-    /// Stores a batch of evidence that arrived from an agent.
+    /// The store one agent's evidence is being written into, created on first use.
     /// </summary>
     /// <remarks>
     /// Each agent gets its own session directory rather than being merged into one. That
@@ -184,15 +393,58 @@ public sealed partial class WorkbenchWindow
     /// because the whole point of comparing them is asking which artifacts appear on
     /// both.
     /// </remarks>
-    private void OnAgentBatch(FleetAgentConnection agent, ObservationBatch batch)
+    private SessionStore StoreFor(FleetAgentConnection agent)
     {
-        // Marshalled to the UI thread. This fires from one receive loop per agent, and
-        // the store map and the SQLite connections underneath it are not thread-safe —
-        // a defect that would never appear with the single agent it is easiest to test
-        // with, and would appear on exactly the multi-VM run the feature exists for.
+        if (_agentStores.TryGetValue(agent.Id, out SessionStore? existing)) return existing;
+
+        string root = _settings.SessionRoot ?? UserSettings.DefaultSessionRoot;
+        string machine = agent.Hello?.MachineName ?? agent.Id;
+        string directory = Path.Combine(root,
+            $"session_fleet_{Sanitize(machine)}_{DateTime.Now:yyyyMMdd_HHmmss}");
+
+        Directory.CreateDirectory(directory);
+        SessionStore store = SessionStore.Create(Path.Combine(directory, SessionPaths.DatabaseName));
+
+        // A placeholder until the agent's own record arrives with the summary. It says
+        // only what the host can actually know from the handshake.
+        store.SaveSessionInfo(new SessionInfo
+        {
+            SessionId = agent.Id,
+            Name = $"{machine} (fleet)",
+            Mode = SessionMode.SystemWide,
+            StartedAt = agent.ConnectedAt,
+            ToolVersion = agent.Hello?.ToolVersion ?? string.Empty,
+            WasElevated = agent.Hello?.IsElevated ?? false,
+            Machine = new MachineProfile
+            {
+                MachineId = agent.Id,
+                MachineName = machine,
+                OsBuild = agent.Hello?.OsBuild ?? string.Empty,
+                Architecture = agent.Hello?.Architecture ?? string.Empty,
+                IsVirtualMachine = agent.Hello?.IsVirtualMachine ?? false,
+                Hypervisor = agent.Hello?.Hypervisor,
+            },
+        });
+
+        _agentStores[agent.Id] = store;
+        _agentDirectories[agent.Id] = directory;
+        return store;
+    }
+
+    /// <summary>
+    /// Runs work against an agent's store on the UI thread.
+    /// </summary>
+    /// <remarks>
+    /// Marshalled because each agent has its own receive loop, and the store map and the
+    /// SQLite connections underneath it are not thread-safe — a defect that would never
+    /// appear with the single agent it is easiest to test with, and would appear on
+    /// exactly the multi-machine run the feature exists for.
+    /// </remarks>
+    private void WithAgentStore(FleetAgentConnection agent, Action<SessionStore> work)
+    {
         if (InvokeRequired)
         {
-            try { BeginInvoke(() => OnAgentBatch(agent, batch)); }
+            try { BeginInvoke(() => WithAgentStore(agent, work)); }
             catch (ObjectDisposedException) { }
             catch (InvalidOperationException) { }
             return;
@@ -200,53 +452,7 @@ public sealed partial class WorkbenchWindow
 
         try
         {
-            if (!_agentStores.TryGetValue(agent.Id, out SessionStore? store))
-            {
-                string root = _settings.SessionRoot ?? UserSettings.DefaultSessionRoot;
-                string machine = agent.Hello?.MachineName ?? agent.Id;
-                string directory = Path.Combine(root,
-                    $"session_fleet_{Sanitize(machine)}_{DateTime.Now:yyyyMMdd_HHmmss}");
-
-                Directory.CreateDirectory(directory);
-                store = SessionStore.Create(Path.Combine(directory, SessionPaths.DatabaseName));
-
-                store.SaveSessionInfo(new SessionInfo
-                {
-                    SessionId = agent.Id,
-                    Name = $"{machine} (fleet)",
-                    Mode = SessionMode.SystemWide,
-                    StartedAt = agent.ConnectedAt,
-                    Machine = new MachineProfile
-                    {
-                        MachineId = agent.Id,
-                        MachineName = machine,
-                        OsBuild = agent.Hello?.OsBuild ?? string.Empty,
-                        Architecture = agent.Hello?.Architecture ?? string.Empty,
-                        IsVirtualMachine = agent.Hello?.IsVirtualMachine ?? false,
-                        Hypervisor = agent.Hello?.Hypervisor,
-                    },
-                });
-
-                _agentStores[agent.Id] = store;
-                _agentDirectories[agent.Id] = directory;
-            }
-
-            // The origin is stamped here, not trusted from the wire: it is what keeps two
-            // machines separable in a comparison, and an agent should not be able to
-            // claim to be a different one.
-            store.ImportObservations(batch.Observations
-                .Select(o => o with { OriginId = agent.Id })
-                .ToList());
-
-            if (batch.IsFinal)
-            {
-                store.Checkpoint();
-                store.Dispose();
-                _agentStores.Remove(agent.Id);
-
-                Toast(Strings.Format("fleet.imported", 1, 1), "ok");
-                ListSessions(_settings.SessionRoot);
-            }
+            work(StoreFor(agent));
         }
         catch (Exception ex) when (ex is IOException or Microsoft.Data.Sqlite.SqliteException)
         {
@@ -254,193 +460,76 @@ public sealed partial class WorkbenchWindow
         }
     }
 
-}
-
-/// <summary>
-/// The agent half of multi-machine collection: records locally, reports to a host it
-/// has been paired with.
-/// </summary>
-/// <remarks>
-/// <para>
-/// Deliberately passive. The agent connects out to an address the operator typed and
-/// then does nothing at all until the host approves it and sends an order. It opens no
-/// listening socket by default, so a machine running the agent has not gained a remote
-/// entry point.
-/// </para>
-/// <para>
-/// It also refuses to do the two things that would change the machine it runs on
-/// without a local decision: packet capture and HTTPS interception cannot be ordered
-/// remotely, and the order type has no field to ask for them.
-/// </para>
-/// </remarks>
-public static class FleetAgentRunner
-{
-    public static async Task<int> RunAsync(
-        string host, int port, string pairingCode, string sessionRoot, CancellationToken cancellationToken)
-    {
-        using var client = new TcpClient();
-
-        Console.WriteLine($"connecting to {host}:{port}");
-        await client.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
-
-        using SecureChannel channel = await SecureChannel
-            .ConnectAsync(client.GetStream(), pairingCode, cancellationToken)
-            .ConfigureAwait(false);
-
-        Console.WriteLine($"fingerprint {channel.SessionFingerprint}");
-        Console.WriteLine("Check that the host shows the same fingerprint before approving.");
-
-        var paths = Core.Naming.PathNormalizer.CreateForCurrentMachine();
-        MachineProfile machine = Collectors.MachineProfiler.Describe(paths);
-
-        await FleetTransport.SendAsync(channel, FleetMessage.Create(FleetMessageType.Hello, null, new AgentHello
+    private void OnAgentBatch(FleetAgentConnection agent, ObservationBatch batch)
+        => WithAgentStore(agent, store =>
         {
-            MachineName = machine.MachineName,
-            OsBuild = machine.OsBuild,
-            Architecture = machine.Architecture,
-            IsVirtualMachine = machine.IsVirtualMachine,
-            Hypervisor = machine.Hypervisor,
-            ToolVersion = BuildInfo.Version,
-            IsElevated = Privilege.IsElevated(),
-        }), cancellationToken).ConfigureAwait(false);
+            // The origin is stamped here, not trusted from the wire: it is what keeps two
+            // machines separable in a comparison, and an agent should not be able to
+            // claim to be a different one.
+            store.ImportObservations(batch.Observations
+                .Select(o => o with { OriginId = agent.Id })
+                .ToList());
 
-        Console.WriteLine("waiting for the host to approve this machine…");
+            PostFleetState();
+        });
 
-        FleetMessage? decision = await FleetTransport.ReceiveAsync(channel, cancellationToken).ConfigureAwait(false);
-        if (decision is null || decision.Type != FleetMessageType.Approved)
+    private void OnAgentProcesses(FleetAgentConnection agent, ProcessBatch batch)
+        => WithAgentStore(agent, store =>
         {
-            Console.Error.WriteLine("the host did not approve this agent.");
-            return 4;
-        }
+            foreach (ProcessNode node in batch.Processes) node.OriginId = agent.Id;
+            store.UpsertProcesses(batch.Processes);
+            PostFleetState();
+        });
 
-        string agentId = decision.AgentId ?? Guid.NewGuid().ToString("N")[..12];
-        Console.WriteLine($"approved as {agentId}");
-
-        return await ServeAsync(channel, agentId, sessionRoot, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async Task<int> ServeAsync(
-        SecureChannel channel, string agentId, string sessionRoot, CancellationToken cancellationToken)
-    {
-        Collectors.SessionOrchestrator? orchestrator = null;
-        string? directory = null;
-
-        try
+    private void OnAgentFlows(FleetAgentConnection agent, FlowBatch batch)
+        => WithAgentStore(agent, store =>
         {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                FleetMessage? message = await FleetTransport.ReceiveAsync(channel, cancellationToken).ConfigureAwait(false);
-                if (message is null) return 0;
+            store.UpsertFlows(batch.Flows.Select(f => { f.OriginId = agent.Id; return f; }));
+            PostFleetState();
+        });
 
-                switch (message.Type)
-                {
-                    case FleetMessageType.StartCollection when orchestrator is null:
-                    {
-                        CollectionOrder order = message.Read<CollectionOrder>() ?? new CollectionOrder();
-
-                        orchestrator = new Collectors.SessionOrchestrator(new Collectors.SessionOptions
-                        {
-                            Mode = order.TargetPath is { Length: > 0 }
-                                ? SessionMode.LaunchTarget
-                                : SessionMode.SystemWide,
-                            TargetPath = order.TargetPath,
-                            TargetArguments = order.TargetArguments,
-                            SessionRoot = sessionRoot,
-                            Name = $"agent_{agentId}",
-                            CaptureSnapshots = order.CaptureSnapshots,
-                            Kernel = new Collectors.Etw.KernelCollectorOptions { CollectReads = order.CollectReads },
-
-                            // Absent on purpose, and not configurable from the wire.
-                            CapturePackets = false,
-                            InterceptionConsent = null,
-                        });
-
-                        await orchestrator.StartAsync(cancellationToken).ConfigureAwait(false);
-                        directory = orchestrator.SessionDirectory;
-                        Console.WriteLine($"recording into {directory}");
-                        break;
-                    }
-
-                    case FleetMessageType.StopCollection when orchestrator is not null:
-                    {
-                        Console.WriteLine("stopping…");
-                        SessionInfo finished = await orchestrator.StopAsync(cancellationToken).ConfigureAwait(false);
-                        await orchestrator.DisposeAsync().ConfigureAwait(false);
-                        orchestrator = null;
-
-                        await SendSessionAsync(channel, agentId, directory!, finished, cancellationToken)
-                            .ConfigureAwait(false);
-                        return 0;
-                    }
-
-                    case FleetMessageType.Ping:
-                        await FleetTransport.SendAsync(channel,
-                            FleetMessage.Create(FleetMessageType.Pong, agentId, new { }), cancellationToken)
-                            .ConfigureAwait(false);
-                        break;
-                }
-            }
-
-            return 0;
-        }
-        finally
-        {
-            if (orchestrator is not null)
-            {
-                try { await orchestrator.StopAsync(CancellationToken.None).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is IOException or InvalidOperationException) { }
-                await orchestrator.DisposeAsync().ConfigureAwait(false);
-            }
-        }
-    }
-
-    /// <summary>Streams a finished session to the host in bounded batches.</summary>
+    /// <summary>
+    /// Applies the agent's own account of the session, and closes it.
+    /// </summary>
     /// <remarks>
-    /// Batched because a session is routinely millions of rows and a single frame
-    /// holding all of them would need to be buffered whole at both ends. The final batch
-    /// is flagged so the host knows the session is complete rather than truncated by a
-    /// dropped connection.
+    /// The summary arrives last and is what marks a transfer complete. It is also the
+    /// only place the collectors that actually ran, the events lost, and whether the
+    /// machine was elevated are recorded — the host's placeholder knows none of that, and
+    /// used to be everything a transferred session said about itself.
     /// </remarks>
-    private static async Task SendSessionAsync(
-        SecureChannel channel, string agentId, string directory, SessionInfo session, CancellationToken cancellationToken)
-    {
-        const int BatchSize = 400;
-
-        using SessionStore store = SessionStore.Open(Path.Combine(directory, "session.ctdb"));
-
-        var batch = new List<Observation>(BatchSize);
-        long sent = 0;
-
-        foreach (Observation observation in store.Query())
+    private void OnAgentSummary(FleetAgentConnection agent, SessionInfo summary)
+        => WithAgentStore(agent, store =>
         {
-            batch.Add(observation);
-            if (batch.Count < BatchSize) continue;
+            string machine = agent.Hello?.MachineName ?? agent.Id;
 
-            await SendBatchAsync(channel, agentId, batch, false, cancellationToken).ConfigureAwait(false);
-            sent += batch.Count;
-            batch.Clear();
+            // The agent's record is kept as it stands — it is the only account of what
+            // actually ran — and only the identity is re-stamped, so that two agents
+            // cannot collide and neither can claim to be a machine it is not.
+            summary.Name = $"{machine} (fleet)";
+            summary.Machine.MachineId = agent.Id;
+            summary.Machine.MachineName = machine;
 
-            Console.Write($"\rsent {sent:N0}");
+            store.SaveSessionInfo(summary);
+            store.Checkpoint();
+            store.Dispose();
+            _agentStores.Remove(agent.Id);
+
+            Toast(Strings.Format("fleet.imported", 1, 1), "ok");
+            ListSessions(_settings.SessionRoot);
+            PostFleetState();
+        });
+
+    private void OnAgentControlResult(FleetAgentConnection agent, ControlOutcome outcome)
+    {
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(() => OnAgentControlResult(agent, outcome)); }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+            return;
         }
 
-        await SendBatchAsync(channel, agentId, batch, true, cancellationToken).ConfigureAwait(false);
-        sent += batch.Count;
-
-        Console.WriteLine($"\rsent {sent:N0} observations");
-
-        await FleetTransport.SendAsync(channel,
-            FleetMessage.Create(FleetMessageType.SessionSummary, agentId, session), cancellationToken)
-            .ConfigureAwait(false);
+        Toast($"{agent.Hello?.MachineName ?? agent.Id}: {outcome.Message}", outcome.Succeeded ? "ok" : "error");
+        PostFleetState();
     }
-
-    private static Task SendBatchAsync(
-        SecureChannel channel, string agentId, List<Observation> batch, bool isFinal, CancellationToken cancellationToken)
-        => FleetTransport.SendAsync(channel, FleetMessage.Create(
-            FleetMessageType.Observations, agentId,
-            new ObservationBatch
-            {
-                OriginId = agentId,
-                Observations = new List<Observation>(batch),
-                IsFinal = isFinal,
-            }), cancellationToken);
 }

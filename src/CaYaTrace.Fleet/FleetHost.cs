@@ -30,6 +30,23 @@ public sealed class FleetAgentConnection
 
     public long EventsReceived { get; set; }
 
+    public long ProcessesReceived { get; set; }
+
+    public long FlowsReceived { get; set; }
+
+    /// <summary>The most recent live sample, or null if none has arrived.</summary>
+    public AgentTelemetry? Telemetry { get; set; }
+
+    /// <summary>
+    /// How many recordings this agent has completed on this connection.
+    /// </summary>
+    /// <remarks>
+    /// An agent used to exit after one, so a second run meant re-pairing a machine that
+    /// was already trusted. It now stays, and this is what tells the operator which of
+    /// the listed machines has already produced a session.
+    /// </remarks>
+    public int SessionsCompleted { get; set; }
+
     public DateTimeOffset ConnectedAt { get; } = DateTimeOffset.UtcNow;
 
     internal TaskCompletionSource<bool> Approval { get; } =
@@ -45,6 +62,29 @@ public sealed record ObservationBatch
 {
     public required string OriginId { get; init; }
     public required List<Observation> Observations { get; init; }
+    public bool IsFinal { get; init; }
+}
+
+/// <summary>
+/// The agent's process table.
+/// </summary>
+/// <remarks>
+/// Transferred separately from the observations and before them, because it is the thing
+/// that gives them meaning. See <see cref="FleetMessageType.Processes"/> for what a
+/// session looks like without it.
+/// </remarks>
+public sealed record ProcessBatch
+{
+    public required string OriginId { get; init; }
+    public required List<ProcessNode> Processes { get; init; }
+    public bool IsFinal { get; init; }
+}
+
+/// <summary>The agent's flow table.</summary>
+public sealed record FlowBatch
+{
+    public required string OriginId { get; init; }
+    public required List<NetworkFlow> Flows { get; init; }
     public bool IsFinal { get; init; }
 }
 
@@ -96,6 +136,19 @@ public sealed class FleetHost : IDisposable
     public event Action? Changed;
 
     public event Action<FleetAgentConnection, ObservationBatch>? BatchReceived;
+
+    public event Action<FleetAgentConnection, ProcessBatch>? ProcessesReceived;
+
+    public event Action<FleetAgentConnection, FlowBatch>? FlowsReceived;
+
+    /// <summary>
+    /// The agent's own account of the session it just finished, which is the only place
+    /// the collectors it actually ran, the events it lost, and whether it was elevated
+    /// are recorded. The host's stub knows none of that.
+    /// </summary>
+    public event Action<FleetAgentConnection, SessionInfo>? SummaryReceived;
+
+    public event Action<FleetAgentConnection, ControlOutcome>? ControlCompleted;
 
     public event Action<FleetAgentConnection, string>? Notice;
 
@@ -171,6 +224,53 @@ public sealed class FleetHost : IDisposable
 
     public void StopCollection()
         => Broadcast(FleetMessageType.StopCollection, new { }, AgentState.Collecting);
+
+    /// <summary>Sends an order to one agent rather than all of them.</summary>
+    /// <remarks>
+    /// Several machines under one host is the case this feature exists for, and doing
+    /// something to all of them when the operator picked one is the kind of mistake that
+    /// only shows up when it is expensive.
+    /// </remarks>
+    public void StartCollection(string agentId, CollectionOrder order)
+        => SendTo(agentId, FleetMessageType.StartCollection, order, becomes: AgentState.Collecting);
+
+    public void StopCollection(string agentId)
+        => SendTo(agentId, FleetMessageType.StopCollection, new { });
+
+    /// <summary>Asks one agent for a live sample.</summary>
+    public void RequestTelemetry(string agentId, bool fullProcessList)
+        => SendTo(agentId, FleetMessageType.TelemetryRequest, new { processes = fullProcessList });
+
+    /// <summary>Asks an agent to stop something on its machine.</summary>
+    public void SendControl(string agentId, ControlRequest request)
+        => SendTo(agentId, FleetMessageType.Control, request);
+
+    private void SendTo(string agentId, FleetMessageType type, object payload, AgentState? becomes = null)
+    {
+        FleetAgentConnection? agent;
+        lock (_gate) _agents.TryGetValue(agentId, out agent);
+
+        SecureChannel? channel = agent?.Channel;
+        if (agent is null || channel is null) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await FleetTransport.SendAsync(
+                    channel, FleetMessage.Create(type, agent.Id, payload), CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                if (becomes is not null) agent.State = becomes.Value;
+                Changed?.Invoke();
+            }
+            catch (Exception ex) when (ex is IOException or ChannelException or ObjectDisposedException)
+            {
+                agent.State = AgentState.Gone;
+                Changed?.Invoke();
+            }
+        });
+    }
 
     private void Broadcast(FleetMessageType type, object payload, AgentState required)
     {
@@ -316,13 +416,58 @@ public sealed class FleetHost : IDisposable
                     if (batch is null) break;
 
                     agent.EventsReceived += batch.Observations.Count;
-                    agent.State = batch.IsFinal ? AgentState.Finished : AgentState.Collecting;
+
+                    // Not Finished on the last observation batch: the process table, the
+                    // flows and the agent's own session record still have to arrive, and
+                    // marking the transfer complete here is what let a session be opened
+                    // while half of it was still on the wire.
+                    agent.State = AgentState.Collecting;
                     BatchReceived?.Invoke(agent, batch);
                     Changed?.Invoke();
                     break;
 
+                case FleetMessageType.Processes:
+                    ProcessBatch? processes = message.Read<ProcessBatch>();
+                    if (processes is null) break;
+
+                    agent.ProcessesReceived += processes.Processes.Count;
+                    ProcessesReceived?.Invoke(agent, processes);
+                    Changed?.Invoke();
+                    break;
+
+                case FleetMessageType.Flows:
+                    FlowBatch? flows = message.Read<FlowBatch>();
+                    if (flows is null) break;
+
+                    agent.FlowsReceived += flows.Flows.Count;
+                    FlowsReceived?.Invoke(agent, flows);
+                    Changed?.Invoke();
+                    break;
+
+                case FleetMessageType.Telemetry:
+                    AgentTelemetry? sample = message.Read<AgentTelemetry>();
+                    if (sample is null) break;
+
+                    agent.Telemetry = sample;
+                    Changed?.Invoke();
+                    break;
+
+                case FleetMessageType.ControlResult:
+                    ControlOutcome? outcome = message.Read<ControlOutcome>();
+                    if (outcome is null) break;
+
+                    ControlCompleted?.Invoke(agent, outcome);
+                    Changed?.Invoke();
+                    break;
+
                 case FleetMessageType.SessionSummary:
+                    SessionInfo? summary = message.Read<SessionInfo>();
+
+                    // The agent stays connected now, so a completed recording is a state
+                    // it can leave again rather than the end of the conversation.
                     agent.State = AgentState.Finished;
+                    agent.SessionsCompleted++;
+                    if (summary is not null) SummaryReceived?.Invoke(agent, summary);
                     Changed?.Invoke();
                     break;
 

@@ -164,6 +164,71 @@ public sealed class SafetyPolicy
     };
 
     /// <summary>
+    /// The state that decides how the shell shows a user their own folders.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Added after an operator reported that Desktop and Documents disappeared from File
+    /// Explorer's navigation pane following a removal. The specific value was not
+    /// identified — the plan that ran is gone and the operator was not certain the
+    /// removal was the cause — so this refuses the whole class rather than the one key,
+    /// which is the right shape of fix either way.
+    /// </para>
+    /// <para>
+    /// The reason this class is reachable at all is the same one behind the activity
+    /// records and the trust stores: a program does not have to intend anything for
+    /// Windows to write here on its behalf. Opening a file dialog writes to
+    /// <c>ComDlg32</c>; showing a window writes shell bags; being installed writes
+    /// <c>FileExts</c>. All of it then looks like something the subject created.
+    /// </para>
+    /// <para>
+    /// The damage is also asymmetric in a way that matters. Leaving one of these behind
+    /// costs the operator a stale entry they can delete by hand; removing one wrongly
+    /// costs them a shell that no longer shows them their documents, with no indication
+    /// of what happened or how to undo it.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] ShellPresentationSegments =
+    {
+        "User Shell Folders",
+        "Shell Folders",
+        "FolderDescriptions",
+        "NameSpace",
+        "MyComputer",
+        "HideDesktopIcons",
+        "FileExts",
+        "TypedPaths",
+        "StreamMRU",
+        "Streams",
+        "Shell Icons",
+        "BagMRU",
+        "Bags",
+    };
+
+    /// <summary>
+    /// Folders the shell reads to build what the user sees, rather than program state.
+    /// </summary>
+    /// <remarks>
+    /// Same class as <see cref="ShellPresentationSegments"/> on the file system. Removing
+    /// a library definition or the Quick Launch folder takes the taskbar and the
+    /// navigation pane with it, and a program touching them is Windows recording its
+    /// existence, not the program installing something.
+    /// </remarks>
+    private static readonly string[] ShellStatePathTokens =
+    {
+        @"%APPDATA%\Microsoft\Windows\Libraries",
+        @"%APPDATA%\Microsoft\Internet Explorer\Quick Launch",
+        @"%APPDATA%\Microsoft\Windows\SendTo",
+        @"%APPDATA%\Microsoft\Windows\Templates",
+        @"%APPDATA%\Microsoft\Windows\Network Shortcuts",
+        @"%APPDATA%\Microsoft\Windows\Printer Shortcuts",
+        @"%APPDATA%\Microsoft\Windows\Themes",
+        @"%LOCALAPPDATA%\Microsoft\Windows\Shell",
+        @"%LOCALAPPDATA%\Microsoft\Windows\Notifications",
+        @"%LOCALAPPDATA%\Packages\Microsoft.Windows.Explorer",
+    };
+
+    /// <summary>
     /// Shared caches Windows maintains for every program. Same reasoning as
     /// <see cref="ActivityRecordRegistryPrefixes"/>, on the file system.
     /// </summary>
@@ -297,6 +362,16 @@ public sealed class SafetyPolicy
             }
         }
 
+        foreach (string shell in ShellStatePathTokens)
+        {
+            if (token.StartsWith(shell, StringComparison.OrdinalIgnoreCase)
+                && (token.Length == shell.Length || token[shell.Length] == '\\'))
+            {
+                return SafetyDecision.Forbid(
+                    $"{shell} is how the shell decides what to show the user, not something a program installs");
+            }
+        }
+
         // A raw device or volume path is not a file. These reach a plan when a program
         // opens a volume handle, and proposing them makes a plan look reckless.
         if (token.StartsWith(@"\Device\", StringComparison.OrdinalIgnoreCase)
@@ -354,6 +429,15 @@ public sealed class SafetyPolicy
             {
                 return SafetyDecision.Forbid(
                     $"{record} is where Windows records that a program ran, not something a program installs");
+            }
+        }
+
+        foreach (string segment in ShellPresentationSegments)
+        {
+            if (HasSegment(normalized, segment))
+            {
+                return SafetyDecision.Forbid(
+                    $"{segment} is how the shell decides what to show the user, not something a program installs");
             }
         }
 
@@ -431,21 +515,13 @@ public sealed class SafetyPolicy
         return false;
     }
 
+    /// <summary>
+    /// Kept as a local name for readability; the one implementation lives in
+    /// <see cref="RegistryPath.CanonicalizeControlSet"/> so the analyzer and this policy
+    /// cannot drift into disagreeing about what a service key is called.
+    /// </summary>
     private static string CanonicalizeControlSet(string normalized)
-    {
-        const string prefix = @"HKLM\SYSTEM\ControlSet";
-        if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return normalized;
-
-        int i = prefix.Length;
-        while (i < normalized.Length && char.IsAsciiDigit(normalized[i])) i++;
-
-        // Must be digits followed by a separator or the end, so "ControlSetFoo" is left
-        // alone rather than silently rewritten.
-        if (i == prefix.Length) return normalized;
-        if (i < normalized.Length && normalized[i] != '\\') return normalized;
-
-        return @"HKLM\SYSTEM\CurrentControlSet" + normalized[i..];
-    }
+        => RegistryPath.CanonicalizeControlSet(normalized);
 
     public SafetyDecision EvaluateRegistryValue(string keyPath, string? valueName)
     {

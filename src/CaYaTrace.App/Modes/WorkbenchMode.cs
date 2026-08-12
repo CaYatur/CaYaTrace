@@ -34,10 +34,14 @@ public static class WorkbenchMode
             return 4;
         }
 
-        // The console exists because this is a console-subsystem binary (so the CLI
-        // composes properly). In GUI mode it is noise, so hide it rather than leaving
-        // an empty black window behind the workbench.
-        HideConsoleWindow();
+        // The console exists because this is a console-subsystem binary, so the CLI verbs
+        // compose properly. The workbench lets go of it entirely rather than hiding it:
+        // an attached process shares the fate of its console host, and software that
+        // closes console windows to shake off whatever is watching it would otherwise be
+        // able to end a recording in progress. See ConsoleHost for the full reasoning,
+        // including why hiding it was also wrong.
+        if (cmd.Has("keep-console")) ConsoleHost.HideIfOwned();
+        else ConsoleHost.Detach();
 
         System.Windows.Forms.Application.EnableVisualStyles();
         System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
@@ -74,27 +78,6 @@ public static class WorkbenchMode
         return 0;
     }
 
-    private static void HideConsoleWindow()
-    {
-        try
-        {
-            IntPtr handle = GetConsoleWindow();
-            if (handle != IntPtr.Zero) ShowWindow(handle, SW_HIDE);
-        }
-        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
-        {
-            // No console to hide — launched detached. Nothing to do.
-        }
-    }
-
-    private const int SW_HIDE = 0;
-
-    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-    private static extern IntPtr GetConsoleWindow();
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 
 internal static class WebViewRuntime

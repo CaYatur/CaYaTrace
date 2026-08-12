@@ -79,6 +79,8 @@ public sealed class ServiceSnapshotProvider : ISnapshotProvider
 
                 using RegistryKey? parameters = key.OpenSubKey("Parameters", writable: false);
 
+                using RegistryKey? triggers = key.OpenSubKey("TriggerInfo", writable: false);
+
                 var record = new
                 {
                     Name = name,
@@ -93,6 +95,26 @@ public sealed class ServiceSnapshotProvider : ISnapshotProvider
                     Group = key.GetValue("Group") as string,
                     DependOnService = key.GetValue("DependOnService") as string[],
                     RequiredPrivileges = key.GetValue("RequiredPrivileges") as string[],
+
+                    // Delayed automatic start, which is how software arranges to come up
+                    // after whatever would have noticed it starting.
+                    DelayedAutostart = key.GetValue("DelayedAutostart") as int?,
+
+                    // What the service control manager does when the service stops
+                    // unexpectedly. This is the mechanism behind "I stopped it and it came
+                    // back", and a removal that does not disarm it does not work — so the
+                    // raw value is carried through for the analyzer to decode.
+                    FailureActions = key.GetValue("FailureActions") is byte[] fa
+                        ? Convert.ToHexString(fa).ToLowerInvariant()
+                        : null,
+                    FailureCommand = key.GetValue("FailureCommand") as string,
+
+                    // A protected service cannot be stopped even by an administrator.
+                    LaunchProtected = key.GetValue("LaunchProtected") as int?,
+
+                    // Trigger-started services do not appear to start automatically and
+                    // still run whenever their trigger fires.
+                    HasTriggers = triggers is not null && triggers.SubKeyCount > 0,
                 };
 
                 row = new SnapshotRow(name, SnapshotJson.Write(record));

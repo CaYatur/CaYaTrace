@@ -135,6 +135,17 @@ public static class TraceCommand
             stopRequested.Cancel();
         };
 
+        // Ctrl+C is not the only way this window goes away. Closing it, logging off, or
+        // software that kills console hosts to shake off whatever is watching it all end
+        // the process outright, and Windows allows a handful of seconds to react first.
+        // Without this, a recording that ran for an hour is a database with no session
+        // record in it and an ETW session still registered with the kernel.
+        ConsoleHost.FinaliseOnClose(() =>
+        {
+            stopRequested.Cancel();
+            orchestrator.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+        });
+
         SessionInfo session = await orchestrator.StartAsync(CancellationToken.None).ConfigureAwait(false);
 
         Console.WriteLine($"session   {session.SessionId}");

@@ -24,6 +24,75 @@ namespace CaYaTrace.Tests;
 /// </remarks>
 public sealed class SafetyPolicySharedStateTests
 {
+    /// <summary>
+    /// The state that decides how the shell shows a user their own folders.
+    /// </summary>
+    /// <remarks>
+    /// An operator reported Desktop and Documents disappearing from File Explorer's
+    /// navigation pane after a removal. The exact value was never identified, so this
+    /// refuses the whole class — which is the right shape of fix regardless of which one
+    /// it was, because a program does not have to intend anything for Windows to write
+    /// here on its behalf: opening a file dialog writes ComDlg32, showing a window writes
+    /// shell bags, being installed writes FileExts.
+    /// </remarks>
+    [Theory]
+    [InlineData(@"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")]
+    [InlineData(@"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")]
+    [InlineData(@"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}")]
+    [InlineData(@"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace\{F42EE2D3-909F-4907-8871-4C22FC0BF756}")]
+    [InlineData(@"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.txt")]
+    [InlineData(@"HKCU\SOFTWARE\Microsoft\Windows\Shell\Bags\1\Desktop")]
+    [InlineData(@"HKCU\SOFTWARE\Microsoft\Windows\Shell\BagMRU")]
+    public void RefusesToTouchHowTheShellPresentsFolders(string key)
+    {
+        SafetyDecision decision = Policy.EvaluateRegistryKey(key);
+
+        Assert.Equal(SafetyVerdict.Forbidden, decision.Verdict);
+        Assert.Contains("shell", decision.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The dialog and document histories were already refused, for a different reason.
+    /// </summary>
+    /// <remarks>
+    /// Kept as its own case so the overlap is deliberate rather than accidental: these
+    /// are records of what a user opened, which the activity-record rule covers and
+    /// describes more accurately than a shell-presentation rule would.
+    /// </remarks>
+    [Theory]
+    [InlineData(@"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU")]
+    [InlineData(@"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs")]
+    public void DialogAndDocumentHistoriesStayRefused(string key)
+        => Assert.Equal(SafetyVerdict.Forbidden, Policy.EvaluateRegistryKey(key).Verdict);
+
+    /// <summary>The same class on the file system: libraries, taskbar pins, Send To.</summary>
+    [Theory]
+    [InlineData(@"%APPDATA%\Microsoft\Windows\Libraries\Documents.library-ms")]
+    [InlineData(@"%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar")]
+    [InlineData(@"%APPDATA%\Microsoft\Windows\SendTo")]
+    public void RefusesToTouchShellStateOnDisk(string path)
+    {
+        SafetyDecision decision = Policy.EvaluateFile(path);
+
+        Assert.Equal(SafetyVerdict.Forbidden, decision.Verdict);
+    }
+
+    /// <summary>
+    /// The refusal must not swallow the subject's own registry keys.
+    /// </summary>
+    /// <remarks>
+    /// A rule broad enough to be safe is only useful if it still lets a real removal
+    /// happen. These are the shapes a removal has to keep being able to act on.
+    /// </remarks>
+    [Theory]
+    [InlineData(@"HKLM\SOFTWARE\e-Kilit")]
+    [InlineData(@"HKLM\SYSTEM\CurrentControlSet\Services\bf6e56533c2749ec")]
+    [InlineData(@"HKCU\SOFTWARE\SomeVendor\SomeProduct")]
+    public void StillAllowsTheSubjectsOwnKeys(string key)
+    {
+        Assert.NotEqual(SafetyVerdict.Forbidden, Policy.EvaluateRegistryKey(key).Verdict);
+    }
+
     private static readonly SafetyPolicy Policy = new(PathNormalizer.CreateForCurrentMachine());
 
     private static SafetyVerdict Key(string path) => Policy.EvaluateRegistryKey(path).Verdict;

@@ -267,7 +267,11 @@ public sealed partial class WorkbenchWindow : Form
             case "fleetStop": FleetStop(); break;
             case "fleetNewCode": FleetNewCode(); break;
             case "fleetDecide": FleetDecide(Str(payload, "agent"), Bool(payload, "approve")); break;
-            case "fleetCollect": FleetCollect(Bool(payload, "start")); break;
+            case "fleetCollect": FleetCollect(Bool(payload, "start"), Str(payload, "agent"), payload); break;
+            case "fleetInspect": FleetInspect(Str(payload, "agent"), Bool(payload, "full")); break;
+            case "fleetControl": FleetControl(Str(payload, "agent"), payload); break;
+            case "fleetJoin": _ = FleetJoinAsync(payload); break;
+            case "fleetLeave": FleetLeave(); break;
 
             case "modalResult": CompleteModal(Str(payload, "id"), Bool(payload, "accepted")); break;
         }
@@ -408,6 +412,20 @@ public sealed partial class WorkbenchWindow : Form
         => payload.ValueKind == JsonValueKind.Object
            && payload.TryGetProperty(name, out JsonElement value)
            && value.ValueKind == JsonValueKind.True;
+
+    /// <summary>
+    /// A flag whose absence means something other than false.
+    /// </summary>
+    /// <remarks>
+    /// Needed because most collection categories are on unless turned off, and reading a
+    /// missing property as false would silently record less than the operator asked for.
+    /// </remarks>
+    private static bool Bool(JsonElement payload, string name, bool fallback)
+        => payload.ValueKind == JsonValueKind.Object
+           && payload.TryGetProperty(name, out JsonElement value)
+           && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.ValueKind == JsonValueKind.True
+            : fallback;
 
     private static List<string> StringList(JsonElement payload, string name)
     {

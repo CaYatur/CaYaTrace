@@ -156,6 +156,10 @@ public sealed class CommandLine
               --check-models         Score every installed model and recommend one
               --ollama <url>         Ollama endpoint (default http://localhost:11434)
               --max-findings <n>     How many top-ranked artifacts to include (default 30)
+              --virustotal           Look up dropped executables by hash (needs
+                                     CAYATRACE_VT_API_KEY). Hash lookup only — CaYaTrace
+                                     never uploads a file, because submitting a sample
+                                     publishes it permanently.
 
               Ranking, scoring, and the reasons behind them are CaYaTrace's own rules and
               need no model. A model only adds a label per artifact, is tested against

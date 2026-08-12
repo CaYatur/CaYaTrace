@@ -92,7 +92,7 @@ This is an early release. What is real today versus designed is tracked honestly
 | Multi-VM comparison (`compare`) with measured path templating | ✅ working |
 | Risk scoring with visible reasons | ✅ working |
 | Ollama integration with model capability testing | ✅ working |
-| VirusTotal integration | 📐 designed |
+| VirusTotal reputation (hash lookup, never uploads) | ✅ working |
 | HTML / CSV export with category selection | 📐 designed |
 
 ## Quick start

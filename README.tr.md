@@ -95,7 +95,7 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Çoklu VM karşılaştırması (`compare`) ve ölçülmüş yol şablonlama | ✅ çalışıyor |
 | Gerekçeleri görünür risk puanlama | ✅ çalışıyor |
 | Model yeterlilik testli Ollama entegrasyonu | ✅ çalışıyor |
-| VirusTotal entegrasyonu | 📐 tasarlandı |
+| VirusTotal itibar sorgusu (hash ile, asla yükleme yapmaz) | ✅ çalışıyor |
 | Kategori seçimli HTML / CSV dışa aktarma | 📐 tasarlandı |
 
 ## Hızlı başlangıç

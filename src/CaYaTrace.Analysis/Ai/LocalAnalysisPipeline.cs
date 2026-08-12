@@ -13,6 +13,9 @@ public sealed record AnnotatedFinding(
     string? Disagreement)
 {
     public RiskLevel Risk => Artifact.Risk;
+
+    /// <summary>File reputation, when a lookup was requested and the file was hashable.</summary>
+    public Reputation.ReputationResult? Reputation { get; init; }
 }
 
 public sealed record AiReport(

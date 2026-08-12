@@ -1,5 +1,6 @@
 using CaYaTrace.Analysis;
 using CaYaTrace.Analysis.Ai;
+using CaYaTrace.Analysis.Reputation;
 using CaYaTrace.Core.Graph;
 using CaYaTrace.Core.Model;
 using CaYaTrace.Storage;
@@ -166,8 +167,59 @@ public static class ExplainCommand
             .ConfigureAwait(false);
 
         if (model is not null) Console.Error.WriteLine();
+
+        if (cmd.Flag("virustotal"))
+            report = await AddReputationAsync(cmd, report).ConfigureAwait(false);
+
         Render(session, report);
         return 0;
+    }
+
+    /// <summary>
+    /// Adds file reputation to findings that are dropped executables.
+    /// </summary>
+    /// <remarks>
+    /// Opt-in, and hash-only. A lookup still discloses to the service that someone is
+    /// interested in this exact file, which is why it never happens implicitly.
+    /// </remarks>
+    private static async Task<AiReport> AddReputationAsync(CommandLine cmd, AiReport report)
+    {
+        string? key = cmd.Get("vt-key") ?? VirusTotalClient.ReadKeyFromEnvironment();
+        if (key is null)
+        {
+            return report with
+            {
+                Caveats = report.Caveats.Append(
+                    "VirusTotal was requested but no API key was found. " +
+                    "Set CAYATRACE_VT_API_KEY, or pass --vt-key.").ToList(),
+            };
+        }
+
+        using var client = new VirusTotalClient(key);
+        var enricher = new ReputationEnricher(new VirusTotalReputationSource(client))
+        {
+            OnProgress = (index, total, what) =>
+                Console.Error.Write($"\r  checking reputation {index}/{total}  {Shorten(what),-60}"),
+        };
+
+        IReadOnlyDictionary<string, ReputationResult> reputations =
+            await enricher.EnrichAsync(report.Findings.Select(static f => f.Artifact)).ConfigureAwait(false);
+
+        Console.Error.WriteLine();
+
+        var enriched = report.Findings
+            .Select(f => reputations.TryGetValue(f.Artifact.Observation.Target, out ReputationResult? r)
+                ? f with { Reputation = r }
+                : f)
+            .ToList();
+
+        return report with
+        {
+            Findings = enriched,
+            Caveats = report.Caveats.Append(
+                "Reputation is a hash lookup only. CaYaTrace never uploads a file: " +
+                "submitting a sample publishes it permanently.").ToList(),
+        };
     }
 
     private static void Render(SessionInfo session, AiReport report)
@@ -194,6 +246,9 @@ public static class ExplainCommand
 
                 foreach (string reason in finding.Artifact.Reasons)
                     Console.WriteLine($"      · {reason}");
+
+                if (finding.Reputation is { } reputation)
+                    Console.WriteLine($"      reputation: {reputation.Summarize()}");
 
                 if (finding.Label is not null)
                     Console.WriteLine($"      model: {finding.Label} ({finding.LabelConfidence})");

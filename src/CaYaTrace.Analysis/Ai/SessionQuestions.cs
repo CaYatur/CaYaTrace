@@ -26,6 +26,23 @@ public enum SessionQuestionKind
 
     /// <summary>What led to what — the launch chain, rendered.</summary>
     Tree,
+
+    /// <summary>
+    /// Conversations between programs on this machine, which never touch the network.
+    /// </summary>
+    /// <remarks>
+    /// Split from <see cref="NetworkDestinations"/> because the two have opposite answers
+    /// from the same session and were sharing one. Asked whether programs had talked to
+    /// each other locally, the assistant answered "no" and then listed five internet hosts
+    /// — the loopback conversations were recorded and never consulted.
+    /// </remarks>
+    LocalConversations,
+
+    /// <summary>What something is and what it appears to be for.</summary>
+    Explain,
+
+    /// <summary>The command that would carry out what was just discussed.</summary>
+    Command,
 }
 
 /// <summary>How much of an answer the operator wants.</summary>
@@ -136,7 +153,18 @@ public sealed class SessionQuestions
         (SessionQuestionKind.Listeners, new[]
         {
             "listen", "port", "server socket", "incoming", "expose",
-            "dinle", "port aç", "gelen", "aç",
+            "dinle", "port aç", "gelen", "soket",
+        }),
+
+        // Deliberately ahead of the internet-facing network words in specificity: every
+        // phrase here also contains one of them, and longest-match is what keeps "did
+        // programs talk to each other on this machine" away from the list of web hosts.
+        (SessionQuestionKind.LocalConversations, new[]
+        {
+            "local network", "same machine", "each other", "between processes", "loopback",
+            "127.0.0.1", "inter-process", "talk to each other", "localhost",
+            "yerel ağ", "aynı makine", "birbiri", "kendi aralarında", "haberleş",
+            "süreçler arası", "yerel bağlantı",
         }),
         (SessionQuestionKind.FilesDropped, new[]
         {
@@ -149,8 +177,14 @@ public sealed class SessionQuestions
         }),
         (SessionQuestionKind.ProcessesStarted, new[]
         {
-            "process", "launch", "spawn", "child", "ran", "executable",
-            "süreç", "işlem", "çalıştır", "başlattı", "alt işlem",
+            "process", "launch", "spawn", "child", "ran", "executable", "program", "application",
+
+            // "which programs opened during the recording" is a question about processes,
+            // and the operator asked it in both of these words. It used to be answered
+            // with a list of listening sockets, because nothing here matched it and a
+            // two-letter listener keyword did.
+            "süreç", "işlem", "çalıştır", "başlattı", "alt işlem", "uygulama", "açıldı",
+            "açılan", "çalışan", "başlayan",
         }),
         (SessionQuestionKind.Injection, new[]
         {
@@ -186,7 +220,7 @@ public sealed class SessionQuestions
             foreach (string word in words)
             {
                 if (word.Length <= bestLength) continue;
-                if (!lower.Contains(word, StringComparison.Ordinal)) continue;
+                if (!Mentions(lower, word)) continue;
 
                 best = kind;
                 bestLength = word.Length;
@@ -196,8 +230,146 @@ public sealed class SessionQuestions
         return best;
     }
 
+    /// <summary>
+    /// True when the question uses this word, rather than merely containing its letters.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A plain substring test reads "hangi programlar açıldı kayıt esnasında" — which
+    /// programs opened during the recording — as a question about listening ports, because
+    /// "açıldı" contains "aç". The operator got a list of sockets for a question about
+    /// programs, and nothing in the answer hinted at why.
+    /// </para>
+    /// <para>
+    /// A word here must start at a word boundary. It may still run into a suffix, because
+    /// Turkish attaches them freely — "servis" has to match "servisleri", "bağlan" has to
+    /// match "bağlantı" — so only the start is anchored. That is the asymmetry the
+    /// language actually has, and anchoring both ends would break far more than it fixed.
+    /// </para>
+    /// </remarks>
+    private static bool Mentions(string question, string word)
+    {
+        int from = 0;
+        while (true)
+        {
+            int at = question.IndexOf(word, from, StringComparison.Ordinal);
+            if (at < 0) return false;
+
+            if (at == 0 || !char.IsLetterOrDigit(question[at - 1])) return true;
+            from = at + 1;
+        }
+    }
+
     public SessionAnswer Answer(string question, AnswerDetail detail)
         => Answer(Classify(question), detail);
+
+    private SessionVocabulary? _vocabulary;
+
+    /// <summary>
+    /// The names this session contains, so a question can be matched against them.
+    /// </summary>
+    /// <remarks>
+    /// Built once and cached. A service named <c>61df826a3fa71fa6</c> is recognisable only
+    /// because the session holds it — no pattern would ever match that, and an operator
+    /// pasting it into the chat box is asking about exactly one thing.
+    /// </remarks>
+    public SessionVocabulary Vocabulary()
+    {
+        if (_vocabulary is not null) return _vocabulary;
+
+        var vocabulary = new SessionVocabulary();
+
+        foreach (PersistenceRecord record in _persistence)
+        {
+            switch (record.Kind)
+            {
+                case PersistenceKind.ScheduledTask:
+                    vocabulary.AddTask(record.Identity);
+                    vocabulary.AddTask(record.DisplayName);
+                    break;
+
+                default:
+                    // Everything else that arranges to run again is asked about the same
+                    // way — by the name it was registered under.
+                    vocabulary.AddService(record.Identity);
+                    vocabulary.AddService(record.DisplayName);
+                    break;
+            }
+
+            vocabulary.AddFile(record.Command);
+        }
+
+        foreach (ProcessNode process in _processes)
+        {
+            vocabulary.AddProcess(process.ImageName);
+            vocabulary.AddFile(process.ImagePath);
+        }
+
+        foreach (NetworkFlow flow in _store.LoadFlows())
+        {
+            vocabulary.AddHost(flow.ResolvedHost);
+            vocabulary.AddHost(flow.ServerName);
+        }
+
+        foreach (Observation o in _store.Query(new ObservationQuery
+        {
+            Categories = new List<EventCategory> { EventCategory.Dns },
+        }))
+        {
+            if (o.Action == EventAction.DnsQuery) vocabulary.AddHost(o.Target);
+        }
+
+        foreach (Observation o in _store.Query(new ObservationQuery
+        {
+            Categories = new List<EventCategory> { EventCategory.File },
+        }))
+        {
+            if (o.Action is EventAction.FileCreate or EventAction.FileWrite) vocabulary.AddFile(o.Target);
+        }
+
+        return _vocabulary = vocabulary;
+    }
+
+    /// <summary>
+    /// Cuts an answer down to the things the question actually named.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The measured answer is built per topic, so "is anything connecting to example.com"
+    /// produces every host in the session. Narrowing turns that back into an answer to the
+    /// question that was asked.
+    /// </para>
+    /// <para>
+    /// A narrowing that matches nothing is left alone rather than returned empty. The
+    /// operator asked about something and the session has rows about that topic; handing
+    /// back "0 host(s)" because the entity matcher was too strict would be the tool losing
+    /// evidence it holds. Instead the full answer stands, and the count says how much of it
+    /// was relevant.
+    /// </para>
+    /// </remarks>
+    public static SessionAnswer Narrow(SessionAnswer answer, QuestionEntities entities)
+    {
+        if (!entities.Any || answer.Evidence.Count == 0) return answer;
+
+        List<string> names = entities.AllNames().Where(static n => n.Length >= 3).ToList();
+        if (names.Count == 0) return answer;
+
+        List<string> kept = answer.Evidence
+            .Where(row => names.Any(n => row.Contains(n, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        if (kept.Count == 0 || kept.Count == answer.Evidence.Count) return answer;
+
+        string subject = string.Join(", ", names.Take(3));
+
+        return answer with
+        {
+            Text = $"{kept.Count} of {answer.Evidence.Count} match {subject}.",
+            Evidence = kept,
+            MatchCount = kept.Count,
+            Facts = string.Join('\n', kept),
+        };
+    }
 
     public SessionAnswer Answer(SessionQuestionKind kind, AnswerDetail detail) => kind switch
     {
@@ -205,6 +377,7 @@ public sealed class SessionQuestions
         SessionQuestionKind.Services => Persistence(detail, PersistenceKind.Service),
         SessionQuestionKind.ScheduledTasks => Persistence(detail, PersistenceKind.ScheduledTask),
         SessionQuestionKind.NetworkDestinations => NetworkDestinations(detail),
+        SessionQuestionKind.LocalConversations => LocalConversations(detail),
         SessionQuestionKind.Listeners => Listeners(detail),
         SessionQuestionKind.FilesDropped => Files(detail),
         SessionQuestionKind.RegistryChanges => RegistryChanges(detail),
@@ -360,6 +533,119 @@ public sealed class SessionQuestions
             MatchCount = hosts.Count,
             Facts = string.Join('\n', evidence),
         };
+    }
+
+    /// <summary>
+    /// Conversations between two programs on this machine.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A separate answer from the list of internet hosts, and it has to be: asked "did
+    /// programs on the local network talk to each other", the assistant used to answer
+    /// "no" and then print five hosts on the internet. The conversations were in the
+    /// session the whole time — recorded through Winsock, which is the only source that
+    /// sees traffic that never reaches a network adapter.
+    /// </para>
+    /// <para>
+    /// Both ends of a conversation are recorded separately, once by each participant. They
+    /// are paired here so the answer is a conversation rather than two halves of one, and
+    /// the tool's own proxy is named plainly when it is the other end — an operator
+    /// comparing byte counts deserves to know which of them are the tool's.
+    /// </para>
+    /// </remarks>
+    private SessionAnswer LocalConversations(AnswerDetail detail)
+    {
+        var rows = new List<(string Row, long Bytes)>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Observation o in _store.Query(new ObservationQuery
+        {
+            Categories = new List<EventCategory> { EventCategory.Network },
+        }))
+        {
+            if (o.Details is not { Length: > 0 } details) continue;
+            if (!details.Contains("\"via\":\"winsock\"", StringComparison.Ordinal)) continue;
+            if (!details.Contains("\"scope\":\"Loopback\"", StringComparison.Ordinal)) continue;
+
+            LoopbackDetail? parsed = LoopbackDetail.Parse(details);
+            if (parsed is null) continue;
+
+            string owner = _processes.FirstOrDefault(p => p.Key == o.Actor)?.ImageName ?? "unattributed";
+            string peer = o.Target2 is { Length: > 0 } ? o.Target2 : "not identified";
+
+            // One conversation, not two half-conversations: the pair of endpoints is the
+            // same either way round, so the first of the two to arrive represents it.
+            string pair = string.Join('|', new[] { $"{owner}:{parsed.SentBytes}", $"{peer}:{parsed.ReceivedBytes}" }.OrderBy(static s => s, StringComparer.Ordinal));
+            if (!seen.Add(pair)) continue;
+
+            string direction = parsed.Inbound ? "←" : "→";
+            rows.Add((
+                $"{owner} {direction} {peer}   {parsed.SentBytes:N0} B sent, {parsed.ReceivedBytes:N0} B received"
+                + $" ({parsed.Sends} send(s), {parsed.Receives} receive(s)) on {o.Target}",
+                parsed.SentBytes + parsed.ReceivedBytes));
+        }
+
+        if (rows.Count == 0)
+        {
+            return new SessionAnswer
+            {
+                Kind = SessionQuestionKind.LocalConversations,
+                Text = "No. Nothing on this machine talked to anything else on this machine "
+                     + "during the recording.",
+                IsEmpty = true,
+                Facts = "no local conversations",
+            };
+        }
+
+        int limit = detail == AnswerDetail.Detailed ? rows.Count : Math.Min(15, rows.Count);
+        List<string> evidence = rows
+            .OrderByDescending(static r => r.Bytes)
+            .Take(limit)
+            .Select(static r => r.Row)
+            .ToList();
+
+        return new SessionAnswer
+        {
+            Kind = SessionQuestionKind.LocalConversations,
+            Text = $"Yes — {rows.Count} conversation(s) between programs on this machine. "
+                 + "Winsock reports who spoke to whom and how much, but not what was said: "
+                 + "the bytes never leave the sending program's memory.",
+            Evidence = evidence,
+            MatchCount = rows.Count,
+            Facts = string.Join('\n', evidence),
+        };
+    }
+
+    /// <summary>The parts of a loopback conversation record this answer reads.</summary>
+    private sealed record LoopbackDetail(
+        long SentBytes, long ReceivedBytes, int Sends, int Receives, bool Inbound)
+    {
+        public static LoopbackDetail? Parse(string json)
+        {
+            try
+            {
+                using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(json);
+                System.Text.Json.JsonElement root = document.RootElement;
+
+                return new LoopbackDetail(
+                    Number(root, "sentBytes"),
+                    Number(root, "receivedBytes"),
+                    (int)Number(root, "sends"),
+                    (int)Number(root, "receives"),
+                    root.TryGetProperty("inbound", out System.Text.Json.JsonElement inbound)
+                        && inbound.ValueKind == System.Text.Json.JsonValueKind.True);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return null;
+            }
+
+            static long Number(System.Text.Json.JsonElement root, string name) =>
+                root.TryGetProperty(name, out System.Text.Json.JsonElement value)
+                && value.ValueKind == System.Text.Json.JsonValueKind.Number
+                    ? value.GetInt64()
+                    : 0;
+        }
     }
 
     /// <summary>

@@ -262,6 +262,8 @@ public sealed partial class WorkbenchWindow : Form
             case "aiExplain": _ = AiExplainAsync(Str(payload, "endpoint"), Str(payload, "model")); break;
             case "ask": _ = AskAsync(payload); break;
             case "askCancel": CancelAsk(); break;
+            case "askClear": ClearConversation(); break;
+            case "askWeb": SetWebResearch(Bool(payload, "enabled")); break;
             case "vtLookup": _ = VirusTotalAsync(Str(payload, "key")); break;
             case "readBody": ReadBody(payload); break;
 
@@ -311,6 +313,10 @@ public sealed partial class WorkbenchWindow : Form
             _store?.Dispose();
             _store = SessionStore.Open(resolved);
             _sessionPath = resolved;
+
+            // A conversation is about one recording. Carrying it into the next one would
+            // answer follow-ups from the wrong machine's evidence.
+            ResetAssistant();
 
             _session = _store.LoadSessionInfo();
             if (_session is null)

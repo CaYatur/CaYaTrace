@@ -1167,6 +1167,54 @@ table.data td.wide { max-width: 520px; }
 .chat-note { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
 .chat-busy { font-size: 12px; color: var(--text-muted); padding: 10px 0; }
 
+/*
+ * A command is the one thing in a chat reply that does something, so it does not look like
+ * the sentence around it. Accented on the left when it is a command to run, and warning
+ * coloured when it is a refusal — a refusal is the more important of the two and has to
+ * read as an answer rather than as a failure.
+ */
+.command-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-dark);
+  border-radius: 0 6px 6px 0;
+}
+
+.command-refused { border-left-color: var(--warning, #d08c26); }
+.command-subject { font-size: 12px; font-weight: 600; margin-bottom: 6px; overflow-wrap: anywhere; }
+
+.command-lines {
+  font-family: var(--mono);
+  font-size: 12px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: var(--bg-panel, var(--bg-dark));
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+
+  /* A long path must scroll inside the block rather than widening the panel. */
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.command-why { font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+
+/* Web results are not evidence and are not styled like it. */
+.web-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+}
+
+.web-caption { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+.web-result { margin-bottom: 10px; }
+.web-result:last-child { margin-bottom: 0; }
+.web-title { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.web-snippet { font-size: 11px; line-height: 1.5; margin-top: 2px; }
+.web-url { font-size: 10px; color: var(--text-muted); margin-top: 2px; overflow-wrap: anywhere; }
+
 /* --------------------------------------------------------------- remediation */
 
 .progress { height: 6px; background: var(--bg-dark); border-radius: 999px; overflow: hidden; margin: 12px 0 8px; }

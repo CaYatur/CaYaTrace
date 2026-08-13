@@ -430,6 +430,7 @@ public sealed partial class WorkbenchWindow
             _store = null;
             _session = null;
             _sessionPath = null;
+            ResetAssistant();
         }
 
         try

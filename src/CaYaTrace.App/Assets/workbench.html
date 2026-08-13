@@ -278,6 +278,24 @@
             <span class="hint" style="margin:0" id="chatModelNote"></span>
           </div>
 
+          <!--
+            The chat remembers the last few exchanges so a follow-up means something, which
+            also means it can be carrying something the operator would rather not keep.
+            Clearing it is one click and needs no explanation.
+
+            Web lookups are off every time the tool starts. Searching for a file name
+            publishes it, and a name from a real intrusion is itself sensitive — that is the
+            operator's disclosure to make, not a default to inherit.
+          -->
+          <div class="row tight wrap center" style="margin-top:8px">
+            <button class="btn btn-ghost btn-small" id="btnChatClear" data-i18n="chat.clear" type="button"></button>
+            <label class="row tight center" style="gap:6px;margin:0;cursor:pointer">
+              <input type="checkbox" id="chatWeb">
+              <span class="hint" style="margin:0" data-i18n="chat.web"></span>
+            </label>
+            <span class="hint" style="margin:0" data-i18n="chat.web_note"></span>
+          </div>
+
           <div class="row tight wrap" style="margin-top:10px">
             <button class="btn btn-ghost btn-small" id="btnChatSummary" data-i18n="chat.summarise" type="button"></button>
             <div class="chips" id="chatSuggestions"></div>
@@ -2822,7 +2840,8 @@ function formatClock(value) {
 
 const CHAT_SUGGESTIONS = [
   'chat.q.persistence', 'chat.q.tree', 'chat.q.services', 'chat.q.tasks',
-  'chat.q.network', 'chat.q.listeners', 'chat.q.files', 'chat.q.processes',
+  'chat.q.network', 'chat.q.local', 'chat.q.listeners', 'chat.q.files',
+  'chat.q.processes', 'chat.q.rank',
 ];
 
 /*
@@ -2860,6 +2879,9 @@ function renderChat() {
       appendEvidence(a, turn.evidence);
     }
 
+    appendCommand(a, turn.command);
+    appendWeb(a, turn.web);
+
     if (turn.note) a.appendChild(el('div', 'chat-note', turn.note));
     if (turn.model && turn.phrased) a.appendChild(el('div', 'chat-note', t('chat.by_model') + ' ' + turn.model));
 
@@ -2888,6 +2910,69 @@ function renderChat() {
   if (stop) stop.hidden = !state.chat.busy;
 
   renderChatModels();
+}
+
+/*
+ * A command the operator can run, shown as something to run.
+ *
+ * Deliberately not folded into the sentence above it. A command is the one thing in a chat
+ * reply that has consequences, and it is built from the session rather than written by the
+ * model — so it is presented as its own object, with the reasoning next to it and a copy
+ * button, rather than as text the model might have paraphrased.
+ *
+ * A refusal renders in the same place and looks the same, because "here is why this is not
+ * safe to hand you" is the more important message of the two.
+ */
+function appendCommand(host, command) {
+  if (!command) return;
+
+  const box = el('div', command.refused ? 'command-box command-refused' : 'command-box');
+  box.appendChild(el('div', 'command-subject', command.subject));
+
+  if (!command.refused && (command.lines || []).length) {
+    const pre = el('pre', 'command-lines', command.lines.join('\n'));
+    box.appendChild(pre);
+
+    const row = el('div', 'row tight');
+    const copy = el('button', 'btn btn-ghost btn-small', t('chat.copy'));
+    copy.type = 'button';
+    copy.onclick = () => {
+      navigator.clipboard.writeText(command.lines.join('\n'))
+        .then(() => toast(t('chat.copied')))
+        .catch(() => {});
+    };
+    row.appendChild(copy);
+    box.appendChild(row);
+
+    if (command.elevated) box.appendChild(el('div', 'chat-note', t('chat.needs_admin')));
+  }
+
+  box.appendChild(el('div', 'command-why', command.rationale));
+  host.appendChild(box);
+}
+
+/*
+ * What a web search said, marked as not being evidence.
+ *
+ * Everything else in a reply was measured on this machine. A search result is somebody's
+ * claim about a name, and the two must not look alike — an operator acting on a forum post
+ * should know that is what they are doing.
+ */
+function appendWeb(host, findings) {
+  if (!findings || !findings.length) return;
+
+  const box = el('div', 'web-box');
+  box.appendChild(el('div', 'web-caption', t('chat.web_caption')));
+
+  findings.forEach(f => {
+    const row = el('div', 'web-result');
+    row.appendChild(el('div', 'web-title', f.title));
+    if (f.snippet) row.appendChild(el('div', 'web-snippet', f.snippet));
+    row.appendChild(el('div', 'web-url', f.url));
+    box.appendChild(row);
+  });
+
+  host.appendChild(box);
 }
 
 /*
@@ -3223,6 +3308,8 @@ function wire() {
 
   document.getElementById('btnChatSummary').onclick = () => askChat(t('chat.q.summary'));
   document.getElementById('btnChatStop').onclick = () => bridge.send('askCancel', {});
+  document.getElementById('btnChatClear').onclick = () => bridge.send('askClear', {});
+  document.getElementById('chatWeb').onchange = e => bridge.send('askWeb', { enabled: e.target.checked });
 
   document.getElementById('timelineSearch').addEventListener('input', e => {
     state.timelineQuery = e.target.value;
@@ -3314,6 +3401,20 @@ function wireBridge() {
   });
 
   bridge.on('chat', payload => {
+    if (payload.cleared) {
+      // The host has forgotten the conversation; the transcript on screen has to go with
+      // it, or the operator is looking at context the assistant no longer has.
+      state.chat.turns = [];
+      renderChat();
+      return;
+    }
+
+    if (payload.web !== undefined) {
+      const box = document.getElementById('chatWeb');
+      if (box) box.checked = !!payload.web;
+      return;
+    }
+
     state.chat.busy = !!payload.busy;
 
     if (!payload.busy && payload.question !== undefined) {
@@ -3327,6 +3428,8 @@ function wireBridge() {
           note: payload.note || null,
           model: payload.model || null,
           empty: !!payload.empty,
+          command: payload.command || null,
+          web: payload.web || [],
         });
       }
     }

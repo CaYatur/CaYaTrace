@@ -900,6 +900,78 @@ public sealed partial class WorkbenchWindow
     /// </remarks>
     private CancellationTokenSource? _askCancellation;
 
+    /// <summary>
+    /// The assistant for the loaded session, kept across questions.
+    /// </summary>
+    /// <remarks>
+    /// It used to be built fresh for every question, which meant the conversation was
+    /// thrown away between one message and the next — so "which of those is more critical"
+    /// had nothing to be more critical than, and said it did not understand. Holding it
+    /// here is what makes a follow-up a follow-up.
+    /// </remarks>
+    private SessionAssistant? _assistant;
+
+    private OllamaClient? _assistantClient;
+    private string? _assistantEndpoint;
+    private readonly WebResearch _research = new();
+
+    /// <summary>Forgets the loaded session's assistant, so the next question rebuilds it.</summary>
+    /// <remarks>
+    /// Called when a different session is opened. Carrying a conversation about one
+    /// recording into another would answer questions about the wrong machine.
+    /// </remarks>
+    private void ResetAssistant()
+    {
+        _assistant = null;
+        _assistantClient?.Dispose();
+        _assistantClient = null;
+        _assistantEndpoint = null;
+    }
+
+    private SessionAssistant Assistant(Uri endpoint)
+    {
+        if (_assistant is not null && string.Equals(_assistantEndpoint, endpoint.ToString(), StringComparison.Ordinal))
+            return _assistant;
+
+        List<ProcessNode> processes = _store!.LoadProcesses();
+        var byKey = new Dictionary<ProcessKey, ProcessNode>();
+        foreach (ProcessNode node in processes) byKey.TryAdd(node.Key, node);
+
+        IReadOnlyList<PersistenceRecord> persistence =
+            new PersistenceAnalyzer(byKey.GetValueOrDefault).Analyze(_store.Query());
+
+        _assistantClient?.Dispose();
+        _assistantClient = new OllamaClient(endpoint);
+        _assistantEndpoint = endpoint.ToString();
+
+        return _assistant = new SessionAssistant(
+            new SessionQuestions(_store, _session!, persistence, processes),
+            _assistantClient, persistence, processes)
+        {
+            Research = _research,
+        };
+    }
+
+    private void ClearConversation()
+    {
+        _assistant?.Conversation.Clear();
+        Post("chat", new { cleared = true });
+    }
+
+    /// <summary>
+    /// Turns web lookups on or off for this session.
+    /// </summary>
+    /// <remarks>
+    /// Off until asked for, every time. Searching for a name publishes it, and a file name
+    /// from a real intrusion is itself sensitive — telling a search engine that somebody is
+    /// looking into it is a disclosure, not a lookup. The operator makes that call.
+    /// </remarks>
+    private void SetWebResearch(bool enabled)
+    {
+        _research.Enabled = enabled;
+        Post("chat", new { web = enabled });
+    }
+
     private async Task AskAsync(JsonElement payload)
     {
         if (_store is null || _session is null)
@@ -926,19 +998,7 @@ public sealed partial class WorkbenchWindow
 
         try
         {
-            List<ProcessNode> processes = _store.LoadProcesses();
-            var byKey = new Dictionary<ProcessKey, ProcessNode>();
-            foreach (ProcessNode node in processes) byKey.TryAdd(node.Key, node);
-
-            IReadOnlyList<PersistenceRecord> persistence =
-                new PersistenceAnalyzer(byKey.GetValueOrDefault).Analyze(_store.Query());
-
-            var questions = new SessionQuestions(_store, _session, persistence, processes);
-
-            using var client = new OllamaClient(ResolveEndpoint(Str(payload, "endpoint")));
-            var assistant = new SessionAssistant(questions, client);
-
-            AssistantReply reply = await assistant
+            AssistantReply reply = await Assistant(ResolveEndpoint(Str(payload, "endpoint")))
                 .AskAsync(question, detail, Strings.Language, model, token)
                 .ConfigureAwait(true);
 
@@ -996,6 +1056,20 @@ public sealed partial class WorkbenchWindow
         evidence = reply.Answer.Evidence,
         matches = reply.Answer.MatchCount,
         empty = reply.Answer.IsEmpty,
+
+        // Built from the session, never from the model, and sent separately so the page
+        // can present it as something to run rather than as part of a sentence.
+        command = reply.Command is null ? null : new
+        {
+            subject = reply.Command.Subject,
+            lines = reply.Command.Lines,
+            rationale = reply.Command.Rationale,
+            refused = reply.Command.Refused,
+            elevated = reply.Command.NeedsElevation,
+        },
+
+        // Marked as coming from outside, because everything else here was measured here.
+        web = reply.Web.Select(static w => new { title = w.Title, url = w.Url, snippet = w.Snippet }),
     });
 
     /// <summary>

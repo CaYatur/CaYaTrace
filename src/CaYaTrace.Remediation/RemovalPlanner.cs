@@ -236,6 +236,70 @@ public sealed class RemovalPlanner
         return processes.TryGetValue(o.Actor, out ProcessNode? node) && node.InScope;
     }
 
+    /// <summary>
+    /// True when the path is a folder Windows maintains rather than one a program made.
+    /// </summary>
+    /// <remarks>
+    /// Resolved from the running machine rather than matched against a list of names, so
+    /// a redirected or localised profile is recognised too — the operator's Documents may
+    /// be on another drive entirely, and a name comparison would miss it and offer to
+    /// delete it.
+    /// </remarks>
+    private static bool IsWellKnownFolder(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+
+        string trimmed = path.TrimEnd('\\', '/');
+
+        foreach (Environment.SpecialFolder folder in WellKnown)
+        {
+            string known = Environment.GetFolderPath(folder);
+            if (known.Length == 0) continue;
+
+            if (string.Equals(trimmed, known.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static readonly Environment.SpecialFolder[] WellKnown =
+    {
+        Environment.SpecialFolder.UserProfile,
+        Environment.SpecialFolder.MyDocuments,
+        Environment.SpecialFolder.MyPictures,
+        Environment.SpecialFolder.MyMusic,
+        Environment.SpecialFolder.MyVideos,
+        Environment.SpecialFolder.Desktop,
+        Environment.SpecialFolder.DesktopDirectory,
+        Environment.SpecialFolder.Favorites,
+        Environment.SpecialFolder.ApplicationData,
+        Environment.SpecialFolder.LocalApplicationData,
+        Environment.SpecialFolder.CommonApplicationData,
+        Environment.SpecialFolder.ProgramFiles,
+        Environment.SpecialFolder.ProgramFilesX86,
+        Environment.SpecialFolder.CommonProgramFiles,
+        Environment.SpecialFolder.CommonProgramFilesX86,
+        Environment.SpecialFolder.StartMenu,
+        Environment.SpecialFolder.CommonStartMenu,
+        Environment.SpecialFolder.Programs,
+        Environment.SpecialFolder.CommonPrograms,
+        Environment.SpecialFolder.Startup,
+        Environment.SpecialFolder.CommonStartup,
+        Environment.SpecialFolder.Windows,
+        Environment.SpecialFolder.System,
+        Environment.SpecialFolder.SystemX86,
+        Environment.SpecialFolder.Templates,
+        Environment.SpecialFolder.InternetCache,
+        Environment.SpecialFolder.Cookies,
+        Environment.SpecialFolder.History,
+        Environment.SpecialFolder.Recent,
+        Environment.SpecialFolder.SendTo,
+        Environment.SpecialFolder.NetworkShortcuts,
+        Environment.SpecialFolder.PrinterShortcuts,
+        Environment.SpecialFolder.UserProfile,
+    };
+
     private RemovalItem? Translate(Observation o, Dictionary<ProcessKey, ProcessNode> processes)
     {
         string who = Describe(o, processes);
@@ -263,6 +327,17 @@ public sealed class RemovalPlanner
                 };
 
             case EventAction.DirectoryCreate:
+                // A directory the operating system already had is never "created by" the
+                // subject, whatever the kernel reported. The create disposition fires when
+                // a program *opens* a directory that exists, so a program that merely
+                // looked in Documents produced an event indistinguishable from one that
+                // made it — and the plan then offered to delete the operator's Documents
+                // folder, ticked, with "created by …" as the reason.
+                //
+                // Judged on whether the path is a shell folder rather than on the event,
+                // because the event cannot tell the two apart.
+                if (IsWellKnownFolder(o.Target)) return null;
+
                 return new RemovalItem
                 {
                     Kind = RemovalKind.Directory,

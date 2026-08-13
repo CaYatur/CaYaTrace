@@ -1,4 +1,4 @@
-using CaYaTrace.Analysis.Ai;
+﻿using CaYaTrace.Analysis.Ai;
 using CaYaTrace.Analysis.Persistence;
 using CaYaTrace.Core.Graph;
 using Xunit;
@@ -96,24 +96,24 @@ public sealed class AssistantGroundingTests
     public void AServiceIsRecognisedByAnameOnlyTheSessionCouldKnow()
     {
         var vocabulary = new SessionVocabulary();
-        vocabulary.AddService("61df826a3fa71fa6");
-        vocabulary.AddService("WinDelay");
+        vocabulary.AddService("a1b2c3d4e5f60718");
+        vocabulary.AddService("DelayedSvc");
 
-        QuestionEntities entities = vocabulary.Extract("windelay servisini kaldırmak istiyorum");
+        QuestionEntities entities = vocabulary.Extract("delayedsvc servisini kaldırmak istiyorum");
 
-        Assert.Contains("WinDelay", entities.Services);
-        Assert.DoesNotContain("61df826a3fa71fa6", entities.Services);
+        Assert.Contains("DelayedSvc", entities.Services);
+        Assert.DoesNotContain("a1b2c3d4e5f60718", entities.Services);
     }
 
     [Fact]
     public void AFileIsRecognisedByItsLeafName()
     {
         var vocabulary = new SessionVocabulary();
-        vocabulary.AddFile(@"C:\WINDOWS\SysWOW64\msdatacomp64.dll");
+        vocabulary.AddFile(@"C:\WINDOWS\SysWOW64\helper64.dll");
 
-        QuestionEntities entities = vocabulary.Extract("msdatacomp64.dll nedir");
+        QuestionEntities entities = vocabulary.Extract("helper64.dll nedir");
 
-        Assert.Contains(entities.Files, f => f.Contains("msdatacomp64.dll", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entities.Files, f => f.Contains("helper64.dll", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
@@ -159,8 +159,8 @@ public sealed class AssistantGroundingTests
     public void ASuspiciousServiceGetsStoppedBeforeItIsDeleted()
     {
         GeneratedCommand command = RemediationCommands.ForPersistence(Record(
-            "61df826a3fa71fa6", RiskLevel.High, PersistenceKind.Service,
-            @"C:\WINDOWS\SysWOW64\7669\b87745ac3eb33a07.exe"));
+            "a1b2c3d4e5f60718", RiskLevel.High, PersistenceKind.Service,
+            @"C:\WINDOWS\SysWOW64\7669\f0e1d2c3b4a59687.exe"));
 
         Assert.False(command.Refused);
         Assert.Equal(3, command.Lines.Count);
@@ -169,7 +169,7 @@ public sealed class AssistantGroundingTests
         // file first fails and leaves the service registered.
         Assert.StartsWith("sc.exe stop", command.Lines[0], StringComparison.Ordinal);
         Assert.StartsWith("sc.exe delete", command.Lines[1], StringComparison.Ordinal);
-        Assert.Contains("b87745ac3eb33a07.exe", command.Lines[2], StringComparison.Ordinal);
+        Assert.Contains("f0e1d2c3b4a59687.exe", command.Lines[2], StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -181,11 +181,11 @@ public sealed class AssistantGroundingTests
     /// </remarks>
     [Theory]
     [InlineData(@"""C:\Program Files\X\x.exe"" -service", @"C:\Program Files\X\x.exe")]
-    [InlineData(@"C:\WINDOWS\system32\windelayer.exe /run", @"C:\WINDOWS\system32\windelayer.exe")]
+    [InlineData(@"C:\WINDOWS\system32\svcworker.exe /run", @"C:\WINDOWS\system32\svcworker.exe")]
     public void OnlyTheExecutableIsDeleted(string command, string expected)
     {
         GeneratedCommand generated = RemediationCommands.ForPersistence(
-            Record("WinDelay", RiskLevel.High, PersistenceKind.Service, command));
+            Record("DelayedSvc", RiskLevel.High, PersistenceKind.Service, command));
 
         Assert.Contains(generated.Lines, l => l.Contains(expected, StringComparison.Ordinal));
         Assert.DoesNotContain(generated.Lines, l => l.Contains("/run", StringComparison.Ordinal));
@@ -218,7 +218,7 @@ public sealed class AssistantGroundingTests
     public void TheReasonsForRemovalAreTheAnalyzersOwn()
     {
         GeneratedCommand command = RemediationCommands.ForPersistence(
-            Record("61df826a3fa71fa6", RiskLevel.High, PersistenceKind.Service, null));
+            Record("a1b2c3d4e5f60718", RiskLevel.High, PersistenceKind.Service, null));
 
         Assert.Contains("runs as LocalSystem", command.Rationale, StringComparison.Ordinal);
     }

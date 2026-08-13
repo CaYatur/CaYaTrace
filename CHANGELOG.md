@@ -1,8 +1,39 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
+
+## [0.5.2] — 2026-08-13
+
+### Fixed
+
+**The Remediate view said no session was loaded when one was.** The build button and the
+three plan options are enabled from the loaded session, and nothing re-evaluated that when
+the view was opened — so an operator who had just finished a recording arrived at a view
+telling them no session existed, with every option greyed out and no way to build a plan
+at all. It is re-evaluated on entry now.
+
+**The plan offered to delete the operator's own folders.** The kernel reports a directory
+create when a program *opens* a directory with a create disposition, which is what every
+program does to a folder it is about to read — indistinguishable from actually making one.
+So a program that merely looked inside Documents produced an event reading "created by",
+and Documents appeared in the plan, ticked, along with the profile root, the desktop, and
+the Internet cache.
+
+Folders Windows maintains are no longer candidates, resolved from the running machine
+rather than matched against a list of names — a profile can be redirected to another
+drive, and a name comparison would miss it in exactly the case where deleting it costs the
+most. A directory the program genuinely created is still offered.
+
+### Changed
+
+**Sample data taken from a real investigation is anonymised throughout.** Domains,
+addresses, service names and file names from the operator's own sessions had been written
+into comments, tests and the changelog. A real indicator in a public repository is both a
+disclosure and a pointer back to the thing being investigated. The measurements stay — the
+counts and the shapes are what make a comment worth reading — and the identifiers are
+replaced.
 
 ## [0.5.1] — 2026-08-13
 
@@ -209,7 +240,7 @@ Awareness and reset the network adapter.
 - The last few exchanges are remembered, so "which of those", "only the relevant one" and
   "write that as one line" mean something. Clearing it is one click.
 - What a question names is extracted and the answer narrowed to it, matched against the
-  names the session holds — no pattern matches a service called `61df826a3fa71fa6`, and
+  names the session holds — no pattern matches a service called `a1b2c3d4e5f60718`, and
   pasting one is the shortest way to ask about it. A name the session never saw is answered
   as absent rather than with everything else.
 - Topic matching required a word boundary. "hangi programlar açıldı" matched the listener

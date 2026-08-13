@@ -1,4 +1,4 @@
-using CaYaTrace.Analysis.Persistence;
+﻿using CaYaTrace.Analysis.Persistence;
 using CaYaTrace.Core.Model;
 using Xunit;
 
@@ -154,16 +154,16 @@ public sealed class PersistenceAnalyzerTests
     /// protected-service list to match nothing at all.
     /// </remarks>
     [Theory]
-    [InlineData(@"HKLM\SYSTEM\ControlSet001\Services\WinDelay")]
-    [InlineData(@"HKLM\SYSTEM\ControlSet002\Services\WinDelay")]
-    [InlineData(@"HKLM\SYSTEM\CurrentControlSet\Services\WinDelay")]
+    [InlineData(@"HKLM\SYSTEM\ControlSet001\Services\DelayedSvc")]
+    [InlineData(@"HKLM\SYSTEM\ControlSet002\Services\DelayedSvc")]
+    [InlineData(@"HKLM\SYSTEM\CurrentControlSet\Services\DelayedSvc")]
     public void FindsAServiceWhicheverControlSetItWasReportedUnder(string key)
     {
         PersistenceRecord record = Assert.Single(new PersistenceAnalyzer()
-            .Analyze(new[] { Registry(key, "ImagePath", @"C:\WINDOWS\system32\windelayer.exe") }));
+            .Analyze(new[] { Registry(key, "ImagePath", @"C:\WINDOWS\system32\svcworker.exe") }));
 
         Assert.Equal(PersistenceKind.Service, record.Kind);
-        Assert.Equal("WinDelay", record.Identity);
+        Assert.Equal("DelayedSvc", record.Identity);
     }
 
     /// <summary>
@@ -182,7 +182,7 @@ public sealed class PersistenceAnalyzerTests
         {
             Registry(
                 @"HKLM\SYSTEM\ControlSet001\Services\bam\State\UserSettings\S-1-5-21-3023131402-199173579-3080135376-1000",
-                @"\Device\HarddiskVolume3\Users\PC\Desktop\e-Kilit Kurulum (Windows).exe",
+                @"\Device\HarddiskVolume3\Users\PC\Desktop\Vendor Setup (Windows).exe",
                 "0c1136b3502add01"),
         };
 
@@ -201,13 +201,13 @@ public sealed class PersistenceAnalyzerTests
     [Fact]
     public void ReadsDelayedStartAndSelfRestart()
     {
-        const string Key = @"HKLM\SYSTEM\CurrentControlSet\Services\WinDelay";
+        const string Key = @"HKLM\SYSTEM\CurrentControlSet\Services\DelayedSvc";
 
         var observations = new[]
         {
             Registry(Key, "Start", "2", 1),
             Registry(Key, "DelayedAutostart", "1", 2),
-            Registry(Key, "ImagePath", @"C:\WINDOWS\system32\windelayer.exe", 3),
+            Registry(Key, "ImagePath", @"C:\WINDOWS\system32\svcworker.exe", 3),
             Registry(Key, "FailureActions",
                 "100e000000000000000000000300000014000000010000008813000001000000881300000000000000000000", 4),
         };

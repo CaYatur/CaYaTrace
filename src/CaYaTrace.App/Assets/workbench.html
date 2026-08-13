@@ -741,6 +741,12 @@ function setView(view) {
   // Views that fetch on demand rather than on load: a session list or a model probe
   // is stale by the time it is looked at otherwise.
   if (view === 'sessions') requestSessions();
+
+  // Re-evaluated on entry, not only when a session loads. The build button and the plan
+  // options are enabled from state.session, and nothing re-ran this after a recording
+  // finished — so an operator who had just recorded a session arrived at a view telling
+  // them no session was loaded, with every option greyed out and no way to build a plan.
+  if (view === 'remediate') renderPlanOptions();
   if (view === 'assistant' && !state.ai.status) requestAiStatus();
   if (view === 'fleet' && !state.fleet) bridge.send('fleetState', {});
 }

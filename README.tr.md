@@ -7,7 +7,7 @@
 [![Lisans: MIT](https://img.shields.io/badge/Lisans-MIT-dc2626.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-111826.svg)](#gereksinimler)
 [![.NET](https://img.shields.io/badge/.NET-8.0-182438.svg)](#gereksinimler)
-[![Durum](https://img.shields.io/badge/durum-0.5.1%20önizleme-b91c1c.svg)](docs/ROADMAP.md)
+[![Durum](https://img.shields.io/badge/durum-0.5.2%20önizleme-b91c1c.svg)](docs/ROADMAP.md)
 
 [English README](README.md) · [Mimari](docs/ARCHITECTURE.md) · [Güvenlik](SECURITY.md) · [Yol haritası](docs/ROADMAP.md)
 
@@ -72,7 +72,7 @@ hiç çalışmadığı bir cihaza götürüp orada temizlik yapabilirsiniz — h
 - **Cihazı bozamayacak bir kaldırma.** Geçersiz kılınamayan yasak listesi, parmak izi
   doğrulaması, silme yerine karantina, geri alma günlüğü ve varsayılan olarak prova modu.
 
-## Durum — 0.5.1 önizleme
+## Durum — 0.5.2 önizleme
 
 Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış olan dürüstçe ayrılmıştır:
 

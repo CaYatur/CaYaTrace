@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -15,7 +15,7 @@ public sealed record WebFinding(string Title, string Url, string Snippet)
 /// </summary>
 /// <remarks>
 /// <para>
-/// An unfamiliar service called <c>WinDelay</c> running <c>windelayer.exe</c> is either a
+/// An unfamiliar service called <c>DelayedSvc</c> running <c>svcworker.exe</c> is either a
 /// product nobody in the room has heard of or something pretending to be one, and the
 /// session cannot tell the difference — that answer is not on the machine. This is how the
 /// question gets asked.

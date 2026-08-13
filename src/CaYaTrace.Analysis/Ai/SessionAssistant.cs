@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using CaYaTrace.Analysis.Persistence;
 using CaYaTrace.Core.Graph;
 using CaYaTrace.Core.Model;
@@ -344,7 +344,7 @@ public sealed class SessionAssistant
         if (followUp != FollowUpIntent.Explain) return Array.Empty<WebFinding>();
 
         // The most specific name available, because "what is this" about a session is not
-        // a searchable question and "what is windelayer.exe" is.
+        // a searchable question and "what is svcworker.exe" is.
         string? term = entities.Files.FirstOrDefault()
             ?? entities.Services.FirstOrDefault()
             ?? entities.Tasks.FirstOrDefault()
@@ -525,8 +525,8 @@ public sealed class SessionAssistant
         "What processes did it start?",
         "Did anything inject into another process?",
         "Which of those is most critical?",
-        "What is windelayer.exe and what does it do?",
-        "Give me the PowerShell to remove WinDelay.",
+        "What is svcworker.exe and what does it do?",
+        "Give me the PowerShell to remove DelayedSvc.",
         "Summarise this session.",
     };
 

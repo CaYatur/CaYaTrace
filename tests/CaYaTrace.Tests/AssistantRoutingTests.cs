@@ -1,4 +1,4 @@
-using CaYaTrace.Analysis.Ai;
+﻿using CaYaTrace.Analysis.Ai;
 using Xunit;
 
 namespace CaYaTrace.Tests;
@@ -136,13 +136,13 @@ public sealed class AssistantRoutingTests
             Question = "servisleri varmı",
             Kind = SessionQuestionKind.Services,
             Headline = "4 service(s).",
-            Evidence = new[] { "Service · 61df826a3fa71fa6 → C:\\WINDOWS\\SysWOW64\\7669\\b87745ac3eb33a07.exe" },
+            Evidence = new[] { "Service · a1b2c3d4e5f60718 → C:\\WINDOWS\\SysWOW64\\7669\\f0e1d2c3b4a59687.exe" },
         });
 
         string described = conversation.Describe();
 
         Assert.Contains("servisleri varmı", described, StringComparison.Ordinal);
         Assert.Contains("4 service(s).", described, StringComparison.Ordinal);
-        Assert.DoesNotContain("b87745ac3eb33a07", described, StringComparison.Ordinal);
+        Assert.DoesNotContain("f0e1d2c3b4a59687", described, StringComparison.Ordinal);
     }
 }

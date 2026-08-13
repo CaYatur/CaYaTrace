@@ -175,7 +175,7 @@ public sealed partial class WorkbenchWindow
     /// </summary>
     /// <remarks>
     /// Deliberately a known list rather than <c>Path.GetFileNameWithoutExtension</c>, which
-    /// would turn "e-Kilit Kurulum 12.09.2025" into "e-Kilit Kurulum 12.09" — a session
+    /// would turn "Vendor Setup 12.09.2025" into "Vendor Setup 12.09" — a session
     /// name is free text and frequently contains dots that are not extensions.
     /// </remarks>
     private static readonly string[] ProgramExtensions =

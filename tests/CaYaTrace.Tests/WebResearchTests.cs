@@ -1,4 +1,4 @@
-using CaYaTrace.Analysis.Ai;
+﻿using CaYaTrace.Analysis.Ai;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -26,7 +26,7 @@ public sealed class WebResearchTests
         var research = new WebResearch();
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => research.SearchAsync("windelayer.exe"));
+            () => research.SearchAsync("svcworker.exe"));
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => research.FetchAsync("https://example.com/"));
@@ -76,7 +76,7 @@ public sealed class WebResearchTests
     {
         string described = WebResearch.Describe(new[]
         {
-            new WebFinding("windelayer.exe", "https://example.com/a", "some claim"),
+            new WebFinding("svcworker.exe", "https://example.com/a", "some claim"),
         });
 
         Assert.Contains("NOT measured on this machine", described, StringComparison.Ordinal);

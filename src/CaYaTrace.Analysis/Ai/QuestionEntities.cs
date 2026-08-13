@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 
 namespace CaYaTrace.Analysis.Ai;
 
@@ -15,7 +15,7 @@ namespace CaYaTrace.Analysis.Ai;
 /// </para>
 /// <para>
 /// Names are recognised by matching the question against what the session actually
-/// contains, not by guessing at a shape. A service called <c>61df826a3fa71fa6</c> matches no
+/// contains, not by guessing at a shape. A service called <c>a1b2c3d4e5f60718</c> matches no
 /// pattern anybody could write down; it matches because the session has a service by that
 /// name. Literals — an address, a port, a registry path — are matched by pattern as well,
 /// because the operator can reasonably ask about something the session never recorded, and
@@ -87,7 +87,7 @@ public sealed record QuestionEntities
 /// </summary>
 /// <remarks>
 /// Built once per session and reused for every question. Names are held lowercase because
-/// an operator types <c>windelay</c> for a service registered as <c>WinDelay</c>, and being
+/// an operator types <c>delayedsvc</c> for a service registered as <c>DelayedSvc</c>, and being
 /// case-sensitive about that would be a bug reported as "it does not know its own data".
 /// </remarks>
 public sealed class SessionVocabulary
@@ -110,7 +110,7 @@ public sealed class SessionVocabulary
     /// Adds a file, indexed by its leaf name as well as its full path.
     /// </summary>
     /// <remarks>
-    /// Nobody types a full path into a chat box. They type <c>msdatacomp64.dll</c>, and the
+    /// Nobody types a full path into a chat box. They type <c>helper64.dll</c>, and the
     /// answer has to find it.
     /// </remarks>
     public void AddFile(string? path)
@@ -217,7 +217,7 @@ public sealed class SessionVocabulary
 
     /// <summary>Names from the session that appear in the question.</summary>
     /// <remarks>
-    /// Longest first, so asking about <c>msdatacomp64.dll</c> does not also report
+    /// Longest first, so asking about <c>helper64.dll</c> does not also report
     /// <c>msdatacomp64</c> as a separate thing when both are in the vocabulary.
     /// </remarks>
     private static List<string> Known(Dictionary<string, string> vocabulary, string question)

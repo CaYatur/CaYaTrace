@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using CaYaTrace.Analysis.Persistence;
 using CaYaTrace.Core.Graph;
 using CaYaTrace.Core.Model;
@@ -288,7 +288,7 @@ public sealed class SessionQuestions
     /// The names this session contains, so a question can be matched against them.
     /// </summary>
     /// <remarks>
-    /// Built once and cached. A service named <c>61df826a3fa71fa6</c> is recognisable only
+    /// Built once and cached. A service named <c>a1b2c3d4e5f60718</c> is recognisable only
     /// because the session holds it — no pattern would ever match that, and an operator
     /// pasting it into the chat box is asking about exactly one thing.
     /// </remarks>

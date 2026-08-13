@@ -344,9 +344,17 @@ public static class SessionProjection
     /// </remarks>
     private static string? Preview(SessionStore store, string? hash, ExportRequest request)
     {
-        const int Bytes = 4096;
+        // Enough to hold a request and its headers, a handshake, or a beacon, which is
+        // what these conversations almost always are.
+        const int Bytes = 8192;
 
-        if (request.Scope != ExportScope.Full) return null;
+        // Everything except the deliberately cut-down report. This used to require the
+        // full scope, so the default export carried byte counts and nothing else and the
+        // buttons that open a body were disabled — an operator looking at their own
+        // exported report could see that a program sent 6.6 KB to an address and had no
+        // way to find out what was in it. Volume is what the scopes are for; contents are
+        // the reason a conversation was recorded at all.
+        if (request.Scope == ExportScope.Minimal) return null;
         if (hash is not { Length: 64 }) return null;
 
         byte[]? body;

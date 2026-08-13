@@ -223,9 +223,6 @@ public static class ConversationRecorder
         /// </remarks>
         public Conversation Build(IReadOnlyCollection<IPAddress> localAddresses)
         {
-            byte[] outbound = _forward.ToArray();
-            byte[] inbound = _reverse.ToArray();
-
             bool firstIsLocal = localAddresses.Any(a => a.Equals(_canonical.LocalAddress));
             bool secondIsLocal = localAddresses.Any(a => a.Equals(_canonical.RemoteAddress));
 
@@ -253,12 +250,29 @@ public static class ConversationRecorder
 
             // Which side opened the conversation. Something connecting *in* means this
             // machine was listening, which is the more interesting of the two.
-            bool inboundConnection = _initiator is not null
-                                     && !(_initiator.Equals(local) && _initiatorPort == localPort);
+            bool localInitiated = _initiator is null
+                                  || (_initiator.Equals(local) && _initiatorPort == localPort);
 
-            // The two streams are held in canonical order; put the local end's first.
-            if (!localIsFirst) (outbound, inbound) = (inbound, outbound);
-            if (inboundConnection) (outbound, inbound) = (inbound, outbound);
+            bool inboundConnection = !localInitiated;
+
+            // The two halves are held by *initiator*, not in canonical order, and picking
+            // between them by canonical order is how they came to be reported backwards.
+            //
+            // The two facts are unrelated: canonical ordering sorts the endpoints so both
+            // halves land in one entry, while forward and reverse mean "from whoever
+            // connected" and "back to them". Where the sort happened to agree with who
+            // connected the answer came out right, and where it did not the report said
+            // the subject had sent what it had received.
+            //
+            // Measured, on a real capture: a program's twenty-one connections to one
+            // address each reported 29,940 bytes sent and 5,076 received, when it had sent
+            // 5,076 and received 29,940 — and the bytes filed as "sent" opened with a
+            // ServerHello, which is a message no client ever sends.
+            Direction sent = localInitiated ? _forward : _reverse;
+            Direction received = localInitiated ? _reverse : _forward;
+
+            byte[] outbound = sent.ToArray();
+            byte[] inbound = received.ToArray();
 
             var key = new FlowKey(_canonical.Protocol, local, localPort, remote, remotePort);
 
@@ -272,10 +286,10 @@ public static class ConversationRecorder
                 Protocol = protocol,
                 First = First,
                 Last = Last,
-                PacketsOut = localIsFirst ? _forward.Packets : _reverse.Packets,
-                PacketsIn = localIsFirst ? _reverse.Packets : _forward.Packets,
-                BytesOut = localIsFirst ? _forward.Bytes : _reverse.Bytes,
-                BytesIn = localIsFirst ? _reverse.Bytes : _forward.Bytes,
+                PacketsOut = sent.Packets,
+                PacketsIn = received.Packets,
+                BytesOut = sent.Bytes,
+                BytesIn = received.Bytes,
                 Outbound = outbound,
                 Inbound = inbound,
                 Truncated = _forward.Truncated || _reverse.Truncated,
@@ -347,9 +361,20 @@ public static class ConversationRecorder
             return (ConversationProtocol.Http, null, Encoding.ASCII.GetString(outbound, 0, end));
         }
 
-        if (outbound.Length >= 5 && outbound[0] == 0x16 && outbound[1] == 0x03)
+        bool tlsOut = outbound.Length >= 5 && outbound[0] == 0x16 && outbound[1] == 0x03;
+        bool tlsIn = inbound.Length >= 5 && inbound[0] == 0x16 && inbound[1] == 0x03;
+
+        if (tlsOut || tlsIn)
         {
-            string? sni = TlsClientHello.ReadServerName(outbound);
+            // Both halves are tried. The client hello is only ever in one of them, and a
+            // capture that began after the connection did — or a conversation whose
+            // initiator could not be established — leaves it in the half this would
+            // otherwise not look at. The name it carries is often the only thing that
+            // turns an address into an answer: one sample here reached x.x.x.x, which
+            // says nothing, and asked it for example.com, which says everything.
+            string? sni = (tlsOut ? TlsClientHello.ReadServerName(outbound) : null)
+                          ?? (tlsIn ? TlsClientHello.ReadServerName(inbound) : null);
+
             return (ConversationProtocol.Tls, sni, sni is null ? "TLS handshake" : $"TLS to {sni}");
         }
 

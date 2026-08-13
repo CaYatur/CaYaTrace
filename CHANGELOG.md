@@ -4,6 +4,49 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] — 2026-08-13
+
+Found by an operator who could see that a program had talked to something and not what it
+had said. Three defects between the capture and the report, all of them in the part that
+turns bytes into an answer.
+
+### Fixed
+
+**Conversations were reported backwards.** The two halves of a conversation are held by
+whoever opened it — forward from the initiator, reverse back to them — while the key that
+files them is ordered by sorting the two endpoints. Those are unrelated facts, and the code
+picked between the halves using the sort. Where the two happened to agree the answer came
+out right; where they did not, the report said the subject had sent what it had received.
+
+Measured on a real capture: a program's twenty-one connections to one address each reported
+29,940 bytes sent and 5,076 received, when it had sent 5,076 and received 29,940. The bytes
+filed as "sent" opened with a ServerHello — a message no client ever sends, and the tell
+that the halves were swapped.
+
+**Which meant the server name was usually missing.** The name a program asks for lives in
+the client hello, so a swapped conversation had the handshake in the half nothing looked at.
+Both halves are now tried, which also covers a capture that began after the connection did.
+On the same capture the number of conversations carrying a name went from 138 to 159 — and
+one of the new ones turned `x.x.x.x`, which says nothing, into `example.com`, which says
+everything.
+
+**Exported reports carried byte counts and no bytes.** Contents were attached only at the
+full scope, so a default export left every "what was sent" button disabled: an operator
+could see that a program sent 6.6 KB to an address and had no way to find out what was in
+it. They now travel with every export except the deliberately cut-down one, since volume is
+what the scopes are for and contents are the reason a conversation is recorded at all.
+
+### Changed
+
+**Said plainly why a conversation on this machine has no contents**, having established it
+rather than assumed it. The Winsock provider hands over a kernel address, not the caller's
+buffer, so reading the sending process's memory does not reach it and no privilege changes
+that. Established loopback traffic never becomes a packet either — capturing every
+component produced 5,276 events and not one of them loopback; the only loopback packets that
+appear are ones to a closed port, which take the ordinary route in order to be rejected.
+What is left would be a kernel driver or injecting into the subject, and neither belongs
+here.
+
 ## [0.4.1] — 2026-08-13
 
 ### Fixed

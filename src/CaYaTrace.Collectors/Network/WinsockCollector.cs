@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.Net;
 using System.Runtime.InteropServices;
 using CaYaTrace.Core.Model;
@@ -49,10 +49,27 @@ public sealed class WinsockCollectorOptions
 /// <para>
 /// <b>What it can and cannot say.</b> It reports which process, which socket, which local
 /// and remote address, how many bytes moved in each direction, and when. It does
-/// <em>not</em> report the bytes: the provider's <c>Buffer</c> field is a pointer into the
-/// calling process's address space, not a copy of the data. Following that pointer would
-/// mean reading another process's memory while it runs — racy, invasive, and the kind of
-/// thing this tool does not do. So a loopback conversation is reported completely except
+/// <em>not</em> report the bytes, and the reason is worth writing down because the obvious
+/// remedies were tried and all of them fail:
+/// </para>
+/// <list type="bullet">
+///   <item><description>
+///     The provider's <c>Buffer</c> field is a <b>kernel</b> address — measured, on this
+///     provider: <c>0xFFFF8086…</c>. It is the driver's own buffer, not the caller's, so
+///     reading the sending process's memory does not reach it. <c>ReadProcessMemory</c>
+///     against it fails on every event, and no privilege changes that.
+///   </description></item>
+///   <item><description>
+///     The packet monitor never sees it either. Established loopback TCP takes a fast path
+///     that forms no packet at all — measured twice, once filtered to <c>127.0.0.1</c> and
+///     once capturing every component: 5,276 events, not one of them loopback. The only
+///     loopback packets that appear are ones to a closed port, which take the ordinary
+///     route in order to be rejected.
+///   </description></item>
+/// </list>
+/// <para>
+/// What remains would be a kernel callout driver or injecting into the subject, and
+/// neither belongs in this tool. So a loopback conversation is reported completely except
 /// for its contents, and the report says so rather than leaving a reader to assume
 /// otherwise.
 /// </para>
@@ -255,6 +272,7 @@ public sealed class WinsockCollector : ICollector
                     if (!_openSends.Add(site)) return;
 
                     long bytes = ReadLength(data);
+
                     Track(endpoint, (uint)data.ProcessID, data.TimeStamp, socket =>
                     {
                         socket.BytesSent += bytes;

@@ -236,6 +236,72 @@ public sealed class StringCatalogueTests
             + string.Join(", ", missing));
     }
 
+    /// <summary>
+    /// The chat handler must not treat an ordinary reply as a control message.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// It did, and it shipped. Every reply carries a <c>web</c> field holding the findings,
+    /// normally an empty array; the handler's first branch tested <c>payload.web !== undefined</c>
+    /// as the acknowledgement for the web-lookup toggle, so every answer matched it, checked
+    /// the box and returned before the turn was filled in or the spinner cleared. Asking
+    /// anything produced a spinner that never stopped.
+    /// </para>
+    /// <para>
+    /// Checked by reading the page rather than by running it, because the failure is one
+    /// line of dispatch and no C# test can reach it — the harness that drives the assistant
+    /// calls it directly and never crosses the bridge.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void TheChatHandlerDoesNotShareAFieldNameBetweenDataAndControl()
+    {
+        string markup = Markup();
+
+        int handler = markup.IndexOf("bridge.on('chat'", StringComparison.Ordinal);
+        Assert.True(handler > 0, "the chat bridge handler was not found");
+
+        // The dispatch is at the top of the handler; the renderer below it may use
+        // payload.web freely.
+        string dispatch = markup[handler..Math.Min(handler + 900, markup.Length)];
+
+        Assert.DoesNotContain("payload.web !== undefined", dispatch, StringComparison.Ordinal);
+        Assert.Contains("payload.webEnabled !== undefined", dispatch, StringComparison.Ordinal);
+
+        // The other half, from the host's source: a field the handler dispatches on must
+        // never be one an ordinary reply carries. Reading both sides is the only way to
+        // check this at all — the harness that drives the assistant calls it directly and
+        // never crosses the bridge, and the page on its own cannot know what is sent to it.
+        string host = Source(Path.Combine("src", "CaYaTrace.App", "Modes", "WorkbenchWindow.Analysis.cs"));
+
+        int reply = host.IndexOf("private void PostReply(", StringComparison.Ordinal);
+        Assert.True(reply > 0, "PostReply was not found");
+
+        string emitted = host[reply..Math.Min(reply + 2000, host.Length)];
+
+        foreach (string control in new[] { "cleared", "webEnabled" })
+        {
+            Assert.False(emitted.Contains($"{control} =", StringComparison.Ordinal),
+                $"PostReply emits '{control}', which the chat handler treats as a control message — "
+                + "every answer would be swallowed by that branch");
+        }
+    }
+
+    /// <summary>Reads a source file from the repository, the way the catalogue is read.</summary>
+    private static string Source(string relative)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "CaYaTrace.sln")))
+            directory = directory.Parent;
+
+        Assert.NotNull(directory);
+
+        string path = Path.Combine(directory!.FullName, relative);
+        Assert.True(File.Exists(path), $"source not found at {path}");
+
+        return File.ReadAllText(path);
+    }
+
     [Fact]
     public void NothingIsLeftUntranslatedByAccident()
     {

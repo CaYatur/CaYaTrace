@@ -3409,9 +3409,9 @@ function wireBridge() {
       return;
     }
 
-    if (payload.web !== undefined) {
+    if (payload.webEnabled !== undefined) {
       const box = document.getElementById('chatWeb');
-      if (box) box.checked = !!payload.web;
+      if (box) box.checked = !!payload.webEnabled;
       return;
     }
 

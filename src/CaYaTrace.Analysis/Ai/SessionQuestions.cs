@@ -37,12 +37,6 @@ public enum SessionQuestionKind
     /// — the loopback conversations were recorded and never consulted.
     /// </remarks>
     LocalConversations,
-
-    /// <summary>What something is and what it appears to be for.</summary>
-    Explain,
-
-    /// <summary>The command that would carry out what was just discussed.</summary>
-    Command,
 }
 
 /// <summary>How much of an answer the operator wants.</summary>

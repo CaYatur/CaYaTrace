@@ -4,6 +4,34 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] — 2026-08-13
+
+### Fixed
+
+**The chat answered nothing in 0.4.0.** Every reply carries a `web` field holding the
+lookup findings, normally an empty array. The page's chat handler used
+`payload.web !== undefined` as the acknowledgement for the web-lookup toggle — and an empty
+array is not undefined, so every answer matched that branch, ticked the checkbox and
+returned before the reply was rendered or the spinner stopped. Asking anything produced a
+spinner that never finished.
+
+The control message now has a name of its own. A test reads both sides — the page's
+dispatch and the host's reply — and fails if a field can ever mean both, because no test
+that drives the assistant can catch this: the harness calls it directly and never crosses
+the bridge, which is exactly why it shipped.
+
+**Web lookups had never been called.** The feature went out with no execution path ever
+having run: the search parsing keys on class names somebody else controls, and if they had
+moved it would have returned nothing while reporting nothing — the same shape of failure
+this release was spent removing from HTTPS interception. There is now a test that performs
+a real search, and one that pins the refusals: nothing leaves the machine until the
+operator switches it on, and a private or non-web address is never fetched, because a name
+out of a recorded session was chosen by whatever was being recorded.
+
+**Page fetching was unreachable.** Search snippets are two lines of marketing and rarely
+say what a file is; the top result's own page usually does, and is now retrieved and used
+in place of the snippet.
+
 ## [0.4.0] — 2026-08-13
 
 Two features that had never worked, found by running the shipping binary instead of

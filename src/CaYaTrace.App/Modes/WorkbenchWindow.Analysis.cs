@@ -969,7 +969,12 @@ public sealed partial class WorkbenchWindow
     private void SetWebResearch(bool enabled)
     {
         _research.Enabled = enabled;
-        Post("chat", new { web = enabled });
+
+        // Deliberately not called "web". That name already carries the findings on every
+        // reply, and sharing it made the page read each answer as a toggle acknowledgement
+        // and discard it — an empty findings list is still not undefined. The chat stopped
+        // producing answers entirely.
+        Post("chat", new { webEnabled = enabled });
     }
 
     private async Task AskAsync(JsonElement payload)

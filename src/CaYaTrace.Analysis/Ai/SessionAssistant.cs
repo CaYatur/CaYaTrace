@@ -355,7 +355,21 @@ public sealed class SessionAssistant
 
         try
         {
-            return await Research.SearchAsync(term, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<WebFinding> found =
+                await Research.SearchAsync(term, cancellationToken).ConfigureAwait(false);
+
+            if (found.Count == 0) return found;
+
+            // Search snippets are two lines of marketing and rarely say what a file is.
+            // The top result's own page usually does, so it is fetched and put in place of
+            // the snippet — one page, because the operator is waiting and the second result
+            // has never yet been the one that answered it.
+            string page = await Research.FetchAsync(found[0].Url, cancellationToken).ConfigureAwait(false);
+            if (page.Length <= found[0].Snippet.Length) return found;
+
+            var enriched = found.ToList();
+            enriched[0] = found[0] with { Snippet = page[..Math.Min(1200, page.Length)] };
+            return enriched;
         }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
         {

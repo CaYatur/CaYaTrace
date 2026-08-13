@@ -1,4 +1,4 @@
-using CaYaTrace.Core.Model;
+﻿using CaYaTrace.Core.Model;
 using CaYaTrace.Core.Naming;
 using CaYaTrace.Storage;
 
@@ -65,8 +65,24 @@ public sealed class RemovalPlanner
         _options = options ?? RemovalPlannerOptions.Default;
     }
 
+    /// <summary>One thing the plan deliberately left out, and why.</summary>
+    public readonly record struct ExcludedItem(RemovalKind Kind, string Target, string Reason);
+
+    /// <summary>
+    /// What the last <see cref="Build"/> refused to make a candidate.
+    /// </summary>
+    /// <remarks>
+    /// Kept so the count can be shown without the rows. An operator comparing the plan
+    /// against their machine needs to know the difference between something the tool never
+    /// found and something it declined to touch — but they need it as one line, not as a
+    /// hundred rows of Windows' own registry keys.
+    /// </remarks>
+    public List<ExcludedItem> Excluded { get; } = new();
+
     public List<RemovalItem> Build(SessionInfo session)
     {
+        Excluded.Clear();
+
         Dictionary<ProcessKey, ProcessNode> processes = _store.LoadProcesses().ToDictionary(static p => p.Key);
 
         var byTarget = new Dictionary<string, RemovalItem>(StringComparer.OrdinalIgnoreCase);
@@ -131,25 +147,152 @@ public sealed class RemovalPlanner
 
             SafetyDecision decision = policy.Evaluate(item);
 
-            // A refused item stays in the plan, marked, instead of vanishing from it.
+            // Something the runner will never touch is not a candidate, and listing it as
+            // one was a mistake I made trying to fix a different complaint.
             //
-            // Dropping it produced the complaint that the remover "filters too much and
-            // skips things that should be removed": an operator comparing the plan against
-            // what was still on their machine had no way to tell the difference between
-            // something the tool had not found and something it had decided not to touch.
-            // The first is a gap to report; the second is a judgement to disagree with.
-            // Both need to be visible, and only one of them was.
+            // The reasoning was that a refusal should be visible rather than silent. It
+            // should — but not as a row in the plan. A recording of one program produced
+            // 107 registry keys under SystemCertificates, every one of them Windows'
+            // own, every one of them reading "protected — will not be touched". That is
+            // not transparency, it is the real findings buried under a hundred rows the
+            // operator cannot act on and did not ask about.
             //
-            // The runner still refuses it. This changes what the plan says, not what it does.
-            RemovalItem entry = decision.Verdict == SafetyVerdict.Forbidden
-                ? item with { Rationale = $"{item.Rationale} — will not be removed: {decision.Reason}" }
-                : item;
+            // They are counted and reported instead, so the number is available without
+            // the noise.
+            if (decision.Verdict == SafetyVerdict.Forbidden)
+            {
+                Excluded.Add(new ExcludedItem(item.Kind, item.Target, decision.Reason));
+                continue;
+            }
 
-            entry.ObservedOn.AddRange(origins);
-            plan.Add(AttachTemplate(entry));
+            item.ObservedOn.AddRange(origins);
+            plan.Add(AttachTemplate(item));
         }
 
+        AddSubjectFootprint(session, processes, plan, policy);
+
         return plan.OrderBy(static i => i.Order).ThenBy(static i => i.Target, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Adds the program itself: its binaries, and the files sitting beside them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Everything above this comes from watching the recording, so it can only ever
+    /// contain what the subject <em>created while being watched</em>. That misses the
+    /// program itself. A subject is normally downloaded, unpacked and then recorded, so
+    /// its own executable and the folder it unpacked into already existed when the
+    /// recording started and no event ever names them as created.
+    /// </para>
+    /// <para>
+    /// The result was a plan that removed a program's registry footprint and left the
+    /// program on disk. Measured, on a recording of one: two registry values, and not one
+    /// of the executables that had done all the work.
+    /// </para>
+    /// <para>
+    /// Removing a program means removing the program. The subject's image, every image its
+    /// process tree ran, and the contents of the directory those sit in are candidates
+    /// whether or not the recording watched them appear — which is the same thing a
+    /// dedicated uninstaller does when it is pointed at an installation directory.
+    /// </para>
+    /// <para>
+    /// <b>Listed file by file.</b> The directory itself is only offered when everything in
+    /// it belongs to the program, because a folder is a container and a container can hold
+    /// something the operator wants: a subject unpacked into Downloads must never take
+    /// Downloads with it, and one unpacked into its own folder should take the folder.
+    /// </para>
+    /// </remarks>
+    private void AddSubjectFootprint(
+        SessionInfo session,
+        Dictionary<ProcessKey, ProcessNode> processes,
+        List<RemovalItem> plan,
+        SafetyPolicy policy)
+    {
+        var images = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (session.TargetPath is { Length: > 0 } target) images.Add(target);
+
+        foreach (ProcessNode node in processes.Values)
+        {
+            if (node.ImagePath is not { Length: > 0 } image) continue;
+
+            // A name is not a path. The process table holds a bare image name whenever the
+            // full path was never resolved, and "cmd.exe" passes every check written to
+            // recognise a system location — so cmd.exe and conhost.exe arrived in the plan
+            // as things to delete, which is a machine lost rather than a program removed.
+            if (!image.Contains('\\', StringComparison.Ordinal)) continue;
+
+            // Never something Windows signed, in either kind of recording. A program that
+            // launches cmd.exe has not made cmd.exe its own, and being inside the
+            // subject's process tree does not transfer ownership of the binary.
+            if (node.IsMicrosoftSigned()) continue;
+
+            // A targeted recording answers about its own tree; a system-wide one has no
+            // tree, and there the signature above is the whole test.
+            if (session.RootProcess == ProcessKey.None || node.InScope) images.Add(image);
+        }
+
+        var known = new HashSet<string>(
+            plan.Select(static i => $"{i.Kind}|{i.Target}"), StringComparer.OrdinalIgnoreCase);
+
+        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string image in images)
+        {
+            // Windows' own binaries are not the subject even when the subject ran them:
+            // a program that launches cmd.exe has not made cmd.exe its own.
+            if (_paths.IsSystemPath(image)) continue;
+
+            Offer(RemovalKind.File, image, "the program's own executable");
+
+            string? directory = SafeDirectory(image);
+            if (directory is { Length: > 0 }) directories.Add(directory);
+        }
+
+        foreach (string directory in directories)
+        {
+            if (IsWellKnownFolder(_paths.Tokenize(directory))) continue;
+            if (_paths.IsSystemPath(directory)) continue;
+
+            string[] files;
+            try { files = Directory.GetFiles(directory, "*", SearchOption.AllDirectories); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+
+            // A directory holding more than a program reasonably ships is a shared one
+            // that the subject happened to run from — a downloads folder, a desktop. Its
+            // contents are not all the program's and must not be swept up as though they
+            // were.
+            const int PlausibleInstall = 2000;
+            if (files.Length > PlausibleInstall) continue;
+
+            foreach (string file in files) Offer(RemovalKind.File, file, "sits with the program's executable");
+
+            Offer(RemovalKind.Directory, directory, "the directory the program ran from");
+        }
+
+        void Offer(RemovalKind kind, string path, string why)
+        {
+            string token = _paths.Tokenize(path);
+            if (!known.Add($"{kind}|{token}")) return;
+
+            var item = new RemovalItem { Kind = kind, Target = token, Rationale = why };
+
+            SafetyDecision decision = policy.Evaluate(item);
+            if (decision.Verdict == SafetyVerdict.Forbidden)
+            {
+                Excluded.Add(new ExcludedItem(kind, token, decision.Reason));
+                return;
+            }
+
+            plan.Add(item);
+        }
+    }
+
+    private static string? SafeDirectory(string path)
+    {
+        try { return Path.GetDirectoryName(path); }
+        catch (ArgumentException) { return null; }
     }
 
     /// <summary>
@@ -237,68 +380,77 @@ public sealed class RemovalPlanner
     }
 
     /// <summary>
-    /// True when the path is a folder Windows maintains rather than one a program made.
+    /// Folders that belong to Windows or to the operator, never to a program.
     /// </summary>
     /// <remarks>
-    /// Resolved from the running machine rather than matched against a list of names, so
-    /// a redirected or localised profile is recognised too — the operator's Documents may
-    /// be on another drive entirely, and a name comparison would miss it and offer to
-    /// delete it.
+    /// <para>
+    /// Written as tokens rather than as paths, and compared against the tokenised target.
+    /// That is the only form that works: a session is routinely recorded on one machine
+    /// and read on another, so resolving <c>Documents</c> against the reading machine
+    /// compares <c>C:\Users\A\Documents</c> with <c>C:\Users\B\Documents</c> and decides
+    /// they are different — which is precisely how the operator's Documents folder ended
+    /// up in a plan, ticked, after a guard had been written to stop it.
+    /// </para>
+    /// <para>
+    /// The tokeniser already resolves a redirected profile to <c>%USERPROFILE%</c>, so
+    /// matching on tokens keeps the property the path comparison was reaching for and
+    /// drops the machine dependence.
+    /// </para>
     /// </remarks>
-    private static bool IsWellKnownFolder(string path)
+    private static readonly string[] WellKnownFolderTokens =
     {
-        if (string.IsNullOrWhiteSpace(path)) return false;
+        "%USERPROFILE%", "%APPDATA%", "%LOCALAPPDATA%", "%PROGRAMDATA%",
+        "%PROGRAMFILES%", "%PROGRAMFILES(X86)%", "%WINDIR%", "%SYSTEM32%", "%SYSWOW64%",
+        "%TEMP%", "%DESKTOP%", "%STARTMENU%", "%PUBLIC%", "%USERSROOT%", "%SYSTEMDRIVE%",
 
-        string trimmed = path.TrimEnd('\\', '/');
+        // The shell folders inside a profile. A program reading any of these produces a
+        // create event for it, and every one of them holds the operator's own data.
+        @"%USERPROFILE%\Documents", @"%USERPROFILE%\Desktop", @"%USERPROFILE%\Downloads",
+        @"%USERPROFILE%\Pictures", @"%USERPROFILE%\Music", @"%USERPROFILE%\Videos",
+        @"%USERPROFILE%\Favorites", @"%USERPROFILE%\Links", @"%USERPROFILE%\Contacts",
+        @"%USERPROFILE%\Searches", @"%USERPROFILE%\Saved Games", @"%USERPROFILE%\OneDrive",
+        @"%USERPROFILE%\AppData", @"%USERPROFILE%\AppData\Local", @"%USERPROFILE%\AppData\Roaming",
 
-        foreach (Environment.SpecialFolder folder in WellKnown)
+        // Caches Windows keeps on every program's behalf. Touched by anything that makes
+        // a web request, owned by none of them.
+        @"%LOCALAPPDATA%\Microsoft", @"%LOCALAPPDATA%\Microsoft\Windows",
+        @"%LOCALAPPDATA%\Microsoft\Windows\History",
+        @"%LOCALAPPDATA%\Microsoft\Windows\INetCache",
+        @"%LOCALAPPDATA%\Microsoft\Windows\INetCookies",
+        @"%LOCALAPPDATA%\Microsoft\Windows\Temporary Internet Files",
+        @"%LOCALAPPDATA%\Microsoft\Windows\WebCache",
+        @"%LOCALAPPDATA%\Microsoft\Windows\Explorer",
+        @"%LOCALAPPDATA%\Temp", @"%LOCALAPPDATA%\Packages",
+        @"%APPDATA%\Microsoft", @"%APPDATA%\Microsoft\Windows",
+        @"%APPDATA%\Microsoft\Windows\Recent",
+        @"%APPDATA%\Microsoft\Windows\SendTo",
+        @"%APPDATA%\Microsoft\Windows\Start Menu",
+        @"%APPDATA%\Microsoft\Windows\Templates",
+        @"%APPDATA%\Microsoft\Windows\Network Shortcuts",
+        @"%APPDATA%\Microsoft\Windows\Printer Shortcuts",
+    };
+
+    /// <summary>
+    /// True when a tokenised path names a folder Windows or the operator owns.
+    /// </summary>
+    /// <remarks>
+    /// Exact match only. Something <em>inside</em> one of these is exactly what a program
+    /// installing itself creates, and excluding a whole subtree would leave the program's
+    /// own directory behind — which is the opposite failure and just as bad.
+    /// </remarks>
+    private static bool IsWellKnownFolder(string tokenized)
+    {
+        if (string.IsNullOrWhiteSpace(tokenized)) return false;
+
+        string trimmed = tokenized.TrimEnd('\\', '/');
+
+        foreach (string known in WellKnownFolderTokens)
         {
-            string known = Environment.GetFolderPath(folder);
-            if (known.Length == 0) continue;
-
-            if (string.Equals(trimmed, known.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
-                return true;
+            if (string.Equals(trimmed, known, StringComparison.OrdinalIgnoreCase)) return true;
         }
 
         return false;
     }
-
-    private static readonly Environment.SpecialFolder[] WellKnown =
-    {
-        Environment.SpecialFolder.UserProfile,
-        Environment.SpecialFolder.MyDocuments,
-        Environment.SpecialFolder.MyPictures,
-        Environment.SpecialFolder.MyMusic,
-        Environment.SpecialFolder.MyVideos,
-        Environment.SpecialFolder.Desktop,
-        Environment.SpecialFolder.DesktopDirectory,
-        Environment.SpecialFolder.Favorites,
-        Environment.SpecialFolder.ApplicationData,
-        Environment.SpecialFolder.LocalApplicationData,
-        Environment.SpecialFolder.CommonApplicationData,
-        Environment.SpecialFolder.ProgramFiles,
-        Environment.SpecialFolder.ProgramFilesX86,
-        Environment.SpecialFolder.CommonProgramFiles,
-        Environment.SpecialFolder.CommonProgramFilesX86,
-        Environment.SpecialFolder.StartMenu,
-        Environment.SpecialFolder.CommonStartMenu,
-        Environment.SpecialFolder.Programs,
-        Environment.SpecialFolder.CommonPrograms,
-        Environment.SpecialFolder.Startup,
-        Environment.SpecialFolder.CommonStartup,
-        Environment.SpecialFolder.Windows,
-        Environment.SpecialFolder.System,
-        Environment.SpecialFolder.SystemX86,
-        Environment.SpecialFolder.Templates,
-        Environment.SpecialFolder.InternetCache,
-        Environment.SpecialFolder.Cookies,
-        Environment.SpecialFolder.History,
-        Environment.SpecialFolder.Recent,
-        Environment.SpecialFolder.SendTo,
-        Environment.SpecialFolder.NetworkShortcuts,
-        Environment.SpecialFolder.PrinterShortcuts,
-        Environment.SpecialFolder.UserProfile,
-    };
 
     private RemovalItem? Translate(Observation o, Dictionary<ProcessKey, ProcessNode> processes)
     {
@@ -308,6 +460,12 @@ public sealed class RemovalPlanner
         {
             case EventAction.FileCreate:
             case EventAction.HardLinkCreate:
+                // Opening a directory is a create at the kernel level, and the file
+                // provider reports it here rather than as a directory create — which is
+                // how %USERPROFILE%\Documents arrived in the plan as a *file*, ticked,
+                // when the program had done nothing but read it.
+                if (IsWellKnownFolder(_paths.Tokenize(o.Target))) return null;
+
                 return new RemovalItem
                 {
                     Kind = RemovalKind.File,
@@ -336,7 +494,7 @@ public sealed class RemovalPlanner
                 //
                 // Judged on whether the path is a shell folder rather than on the event,
                 // because the event cannot tell the two apart.
-                if (IsWellKnownFolder(o.Target)) return null;
+                if (IsWellKnownFolder(_paths.Tokenize(o.Target))) return null;
 
                 return new RemovalItem
                 {

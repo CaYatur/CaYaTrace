@@ -4,6 +4,52 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] — 2026-08-13
+
+### Fixed
+
+**The plan removed a program's registry footprint and left the program on disk.** Everything
+in it came from watching the recording, so it could only ever contain what the subject
+created *while being watched*. A subject is normally downloaded, unpacked and then recorded
+— its own executable and the folder it unpacked into already existed, and no event names
+them. Measured on a real session: two registry values, and not one of the executables that
+had done all the work.
+
+The program itself is now a candidate: its image, every image its process tree ran, and the
+contents of the directory those sit in, whether or not the recording watched them appear.
+Windows' own binaries never are — a batch file that launches `cmd.exe` has not made
+`cmd.exe` its own, and being inside the subject's process tree does not transfer ownership
+of a binary.
+
+**Listed file by file.** Each file beside the executable is its own item. The directory is
+offered only when everything in it belongs to the program, because a folder is a container
+and a container can hold something the operator wants: a subject run out of Downloads must
+never take Downloads with it, and one unpacked into its own folder should take the folder.
+
+**The operator's own folders were still being offered.** The guard added in 0.5.2 compared
+raw paths against the folders of the machine *reading* the session — so a session recorded
+on one machine and read on another compared two different profiles and decided they were
+different. It also only covered directory-create events, and opening a directory is
+reported as a *file* create. Both fixed: the comparison is on the tokenised path, and the
+guard covers both events.
+
+**A hundred rows saying "protected — will not be touched".** A refusal was made visible in
+0.5.0 by leaving it in the plan, which was the wrong place for it: one recording produced
+107 registry keys under `SystemCertificates`, all Windows' own, all unremovable. They are
+counted and reported now, not listed.
+
+**The plan options could not be clicked.** They were disabled from a session flag, and the
+state went stale. Two previous fixes did not hold, so the options are simply never disabled
+— they are choices about what a future plan should contain, setting one before a session is
+open costs nothing, and disabling them bought no safety.
+
+### Changed
+
+**Sample data from real investigations is anonymised throughout** — domains, addresses,
+service names and file names in comments, tests and this file. A real indicator in a public
+repository is both a disclosure and a pointer back to what is being investigated. The
+measurements stay; the identifiers do not.
+
 ## [0.5.2] — 2026-08-13
 
 ### Fixed

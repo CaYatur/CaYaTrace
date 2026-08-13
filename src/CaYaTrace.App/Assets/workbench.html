@@ -1833,12 +1833,18 @@ function renderPlanOptions() {
   }
 
   // Building a plan reads a recording; opening a package does not. With no session the
-  // options and the build button are inert and the package path stays available, which
-  // is the case a package exists for: a machine that has never recorded anything.
+  // build button is inert and the package path stays available, which is the case a
+  // package exists for: a machine that has never recorded anything.
+  //
+  // The options themselves are never disabled, and that is a deliberate retreat. They
+  // were, from a session flag, and operators kept arriving at a view where none of the
+  // three could be clicked — twice I shipped a fix for the state going stale and twice it
+  // did not hold. The options are only choices about what a future plan should contain;
+  // setting one before a session is open costs nothing and is remembered when the plan is
+  // built. Disabling them bought no safety and was the whole of the complaint.
   const hasSession = !!state.session;
   const build = document.getElementById('btnBuildPlan');
   if (build) build.disabled = !hasSession;
-  host.querySelectorAll('input[type=checkbox]').forEach(b => { b.disabled = !hasSession; });
 
   const note = document.getElementById('planNoSession');
   if (note) note.hidden = hasSession;

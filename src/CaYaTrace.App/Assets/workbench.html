@@ -1930,6 +1930,7 @@ function renderPlan() {
       byKind[kind],
       item => {
         const tr = document.createElement('tr');
+        if (item.caution) tr.className = 'plan-caution';
 
         const pick = document.createElement('td');
         pick.className = 'plan-check';
@@ -1944,9 +1945,24 @@ function renderPlan() {
         tr.appendChild(pick);
 
         tr.appendChild(cell(item.target, 'mono plan-target'));
-        tr.appendChild(cell(item.protected
-          ? (item.protectionReason || t('remediate.protected'))
-          : (item.reason || ''), 'plan-reason'));
+
+        /* The reason column. A row the tool will act on but not lightly says so above the
+           evidence, rather than instead of it — the operator needs both to decide, and a
+           path inside a Windows directory must never read like a path on the desktop. */
+        const why = document.createElement('td');
+        why.className = 'plan-reason';
+
+        if (item.protected) {
+          why.textContent = item.protectionReason || t('remediate.protected');
+        } else {
+          if (item.caution) {
+            why.appendChild(el('div', 'plan-caution-note',
+              '⚠ ' + (item.cautionReason || t('remediate.caution'))));
+          }
+          why.appendChild(el('div', null, item.reason || ''));
+        }
+
+        tr.appendChild(why);
         return tr;
       });
     planTable.className += ' plan-table';

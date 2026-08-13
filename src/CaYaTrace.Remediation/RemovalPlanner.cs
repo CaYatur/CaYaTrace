@@ -182,7 +182,56 @@ public sealed class RemovalPlanner
 
         AddSubjectFootprint(session, processes, plan, policy);
 
+        plan = SeparateDirectoriesFromFiles(plan);
+
         return plan.OrderBy(static i => i.Order).ThenBy(static i => i.Target, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>
+    /// Re-types the entries that turned out to be folders.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The kernel reports a directory being made as a <em>file</em> create — a directory
+    /// is a file with a flag set — so a program that unpacks itself into a new folder
+    /// produces one create for the folder and one for each thing in it, all identical in
+    /// shape. The plan then listed the folder as a file, which reads wrong and, worse,
+    /// orders wrong: files are removed before folders precisely so a folder is empty by
+    /// the time its turn comes, and a folder disguised as a file loses that.
+    /// </para>
+    /// <para>
+    /// Which ones are folders can be read straight off the evidence rather than off the
+    /// disk: anything that other recorded paths sit inside is a folder. That answer is the
+    /// same on the machine that recorded the session and on the machine that applies the
+    /// plan, which a disk check would not be — by then the folder may be gone, or may
+    /// never have existed there.
+    /// </para>
+    /// </remarks>
+    private static List<RemovalItem> SeparateDirectoriesFromFiles(List<RemovalItem> plan)
+    {
+        var paths = new HashSet<string>(
+            plan.Where(static i => i.Kind is RemovalKind.File or RemovalKind.Directory)
+                .Select(static i => i.Target.TrimEnd('\\')),
+            StringComparer.OrdinalIgnoreCase);
+
+        var parents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string path in paths)
+        {
+            for (int cut = path.LastIndexOf('\\'); cut > 0; cut = path.LastIndexOf('\\', cut - 1))
+            {
+                string parent = path[..cut];
+                if (paths.Contains(parent)) parents.Add(parent);
+            }
+        }
+
+        if (parents.Count == 0) return plan;
+
+        return plan
+            .Select(item => item.Kind == RemovalKind.File && parents.Contains(item.Target.TrimEnd('\\'))
+                ? item with { Kind = RemovalKind.Directory }
+                : item)
+            .ToList();
     }
 
     /// <summary>
@@ -226,7 +275,7 @@ public sealed class RemovalPlanner
             plan.Select(static i => $"{i.Kind}|{i.Target}"), StringComparer.OrdinalIgnoreCase);
 
         foreach (SubjectFootprint.Component part in Footprint.Components)
-            Offer(RemovalKind.File, part.Path, part.Why, part.Evidence);
+            Offer(RemovalKind.File, part.Path, part.Why, part.Evidence, part.Created);
 
         // A process image is still worth having when the process table resolved one: a
         // program that spawned a helper out of a second directory is named there and
@@ -248,7 +297,7 @@ public sealed class RemovalPlanner
             if (session.RootProcess != ProcessKey.None && !node.InScope) continue;
             if (_paths.IsSystemPath(image)) continue;
 
-            Offer(RemovalKind.File, _paths.Tokenize(image), "the program's own executable", 0);
+            Offer(RemovalKind.File, _paths.Tokenize(image), "the program's own executable", 0, false);
         }
 
         // The directory last, and only when the program's own file is in it.
@@ -263,14 +312,14 @@ public sealed class RemovalPlanner
             && !_paths.IsSystemPath(home))
         {
             Offer(RemovalKind.Directory, home,
-                "the directory the program ran from; removed only once everything in it has been", 0);
+                "the directory the program ran from; removed only once everything in it has been", 0, false);
         }
 
-        void Offer(RemovalKind kind, string token, string why, long evidence)
+        void Offer(RemovalKind kind, string token, string why, long evidence, bool created)
         {
             if (!known.Add($"{kind}|{token}")) return;
 
-            var item = new RemovalItem { Kind = kind, Target = token, Rationale = why };
+            var item = new RemovalItem { Kind = kind, Target = token, Rationale = why, Created = created };
             if (evidence > 0) item.Evidence.Add(evidence);
 
             SafetyDecision decision = policy.Evaluate(item);
@@ -460,6 +509,7 @@ public sealed class RemovalPlanner
                     Kind = RemovalKind.File,
                     Target = _paths.Tokenize(o.Target),
                     Rationale = $"created by {who}",
+                    Created = true,
                     Fingerprint = new ArtifactFingerprint(),
                     Evidence = { o.Seq },
                 };
@@ -490,6 +540,7 @@ public sealed class RemovalPlanner
                     Kind = RemovalKind.Directory,
                     Target = _paths.Tokenize(o.Target),
                     Rationale = $"created by {who}",
+                    Created = true,
                     Evidence = { o.Seq },
                 };
 
@@ -501,6 +552,7 @@ public sealed class RemovalPlanner
                         Kind = RemovalKind.File,
                         Target = _paths.Tokenize(o.Target2),
                         Rationale = $"renamed into place by {who}",
+                        Created = true,
                         Evidence = { o.Seq },
                     }
                     : null;

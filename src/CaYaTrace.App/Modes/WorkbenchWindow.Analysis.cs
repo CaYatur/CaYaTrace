@@ -360,6 +360,16 @@ public sealed partial class WorkbenchWindow
                 pattern = item.TargetPattern,
                 @protected = decision.Verdict == SafetyVerdict.Forbidden,
                 protectionReason = decision.Reason,
+
+                // Somewhere the tool will act, but not somewhere it acts lightly: a file
+                // inside a Windows directory that the recording watched the program put
+                // there, or a path outside every usual installation location. Marked, and
+                // the reason shown, because otherwise the row is indistinguishable from
+                // one naming a file on the desktop — and it is a System32 path, ticked.
+                caution = decision.Verdict == SafetyVerdict.RequiresConfirmation,
+                cautionReason = decision.Verdict == SafetyVerdict.RequiresConfirmation
+                    ? decision.Reason
+                    : null,
             };
         }).ToList();
 

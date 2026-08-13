@@ -215,7 +215,7 @@ public sealed class RemediationRunner : IDisposable
     {
         string path = _paths.Expand(item.Target);
 
-        SafetyDecision decision = _policy.EvaluateFile(path);
+        SafetyDecision decision = _policy.EvaluateFile(path, item.Created);
         if (decision.Verdict == SafetyVerdict.Forbidden)
             return new ItemResult(item, ItemOutcome.SkippedByPolicy, decision.Reason);
 

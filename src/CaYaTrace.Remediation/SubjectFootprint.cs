@@ -33,7 +33,12 @@ public sealed class SubjectFootprint
     /// <summary>One part of the program, and the evidence that it is one.</summary>
     /// <param name="Path">Tokenized, as the recording stored it.</param>
     /// <param name="Why">Shown to the operator beside the item.</param>
-    public readonly record struct Component(string Path, string Why, long Evidence);
+    /// <param name="Created">
+    /// The recording watched the subject write this file, as opposed to reading or
+    /// loading one that was already there. The safety policy reads it: a file inside a
+    /// Windows directory may only be removed when this is true.
+    /// </param>
+    public readonly record struct Component(string Path, string Why, long Evidence, bool Created);
 
     private readonly Dictionary<string, Component> _components = new(StringComparer.OrdinalIgnoreCase);
 
@@ -109,7 +114,7 @@ public sealed class SubjectFootprint
             if (paths.IsSystemPath(token)) continue;
             if (!LooksLikeAFile(token)) continue;
 
-            Add(token, "loaded as a module by the program", o.Seq);
+            Add(token, "loaded as a module by the program", o.Seq, created: false);
         }
     }
 
@@ -177,7 +182,7 @@ public sealed class SubjectFootprint
         };
 
         string? directory = null;
-        var used = new Dictionary<string, (string Why, long Seq)>(StringComparer.OrdinalIgnoreCase);
+        var used = new Dictionary<string, (string Why, long Seq, bool Created)>(StringComparer.OrdinalIgnoreCase);
         var opened = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (Observation o in store.Query(query))
@@ -193,7 +198,7 @@ public sealed class SubjectFootprint
                 : null;
 
             if (o.Action == EventAction.FileOpen) opened.Add(path);
-            else if (Uses(o.Action)) used.TryAdd(path, (Reason(o.Action), o.Seq));
+            else if (Uses(o.Action)) used.TryAdd(path, (Reason(o.Action), o.Seq, Makes(o.Action)));
         }
 
         if (directory is not { Length: > 0 })
@@ -202,7 +207,7 @@ public sealed class SubjectFootprint
             // program is launched and reads nothing — including itself. Nothing is known
             // about the folder it sits in, so nothing is claimed about it: the executable
             // is listed and the folder is neither swept nor offered.
-            Add(paths.Tokenize(target), "the program's own executable", 0);
+            Add(paths.Tokenize(target), "the program's own executable", 0, created: false);
             return;
         }
 
@@ -212,14 +217,14 @@ public sealed class SubjectFootprint
 
         // Named first and named plainly. Whatever else the directory holds, this is the
         // thing the operator asked to be rid of.
-        Add(prefix + file, "the program's own executable", 0);
+        Add(prefix + file, "the program's own executable", 0, created: false);
 
-        foreach ((string path, (string why, long seq)) in used)
+        foreach ((string path, (string why, long seq, bool made)) in used)
         {
             if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
             if (!LooksLikeAFile(path)) continue;
 
-            Add(path, why, seq);
+            Add(path, why, seq, made);
         }
 
         foreach (string path in opened)
@@ -321,7 +326,7 @@ public sealed class SubjectFootprint
         }
 
         foreach (string file in strangers)
-            Add(paths.Tokenize(file), "sits with the program's executable", 0);
+            Add(paths.Tokenize(file), "sits with the program's executable", 0, created: false);
     }
 
     /// <summary>
@@ -337,6 +342,18 @@ public sealed class SubjectFootprint
         or EventAction.FileRead
         or EventAction.FileWrite
         or EventAction.FileSetInfo
+        or EventAction.FileRename
+        or EventAction.HardLinkCreate;
+
+    /// <summary>True when an action is the file coming into existence.</summary>
+    /// <remarks>
+    /// Narrower than <see cref="Uses"/> on purpose. Reading a file proves it was there;
+    /// only a create proves it was not there before, and that is the whole difference
+    /// between a program's own dropped binary and one of Windows'.
+    /// </remarks>
+    private static bool Makes(EventAction action) => action
+        is EventAction.FileCreate
+        or EventAction.FileWrite
         or EventAction.FileRename
         or EventAction.HardLinkCreate;
 
@@ -368,10 +385,10 @@ public sealed class SubjectFootprint
         return path.Contains('\\', StringComparison.Ordinal);
     }
 
-    private void Add(string path, string why, long seq)
+    private void Add(string path, string why, long seq, bool created)
     {
         if (_components.ContainsKey(path)) return;
-        _components[path] = new Component(path, why, seq);
+        _components[path] = new Component(path, why, seq, created);
     }
 
     private static string? SafeDirectory(string path)

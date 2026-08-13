@@ -1308,6 +1308,15 @@ table.data td.wide { max-width: 520px; }
 }
 
 .retry-what { font-size: 13px; color: var(--danger); margin-bottom: 4px; }
+
+/*
+ * A plan row the tool will act on but not lightly — a file the program put inside a
+ * Windows directory, a path outside every usual installation location. Ticked like any
+ * other, because the operator asked for it to be, and never looking like any other.
+ */
+.plan-caution { background: rgba(202, 138, 4, 0.07); }
+.plan-caution-note { color: var(--warning); font-size: 11px; margin-bottom: 3px; }
+.plan-caution .plan-target { border-left: 2px solid var(--warning); padding-left: 8px; }
 .retry-box .hint { margin-bottom: 10px; }
 
 /* --------------------------------------------------------------------- fleet */

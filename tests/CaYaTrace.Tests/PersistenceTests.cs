@@ -281,7 +281,7 @@ public sealed class PersistenceAnalyzerTests
 
         IReadOnlyList<PersistenceRecord> records = new PersistenceAnalyzer().Analyze(new[]
         {
-            Registry(Key, "CaYaTraceProbe", @"C:\ProgramData\Probe\rollcall.exe", 1),
+            Registry(Key, "CaYaTraceProbe", @"C:\ProgramData\Probe\agent.exe", 1),
             new Observation
             {
                 Seq = 2,
@@ -290,7 +290,7 @@ public sealed class PersistenceAnalyzerTests
                 Action = EventAction.AutorunAdd,
                 Target = Key + "::CaYaTraceProbe",
                 Target2 = "autorun",
-                NewValue = @"C:\ProgramData\Probe\rollcall.exe",
+                NewValue = @"C:\ProgramData\Probe\agent.exe",
                 Source = EvidenceSource.SnapshotDiff,
                 Confidence = AttributionConfidence.None,
             },
@@ -298,7 +298,7 @@ public sealed class PersistenceAnalyzerTests
 
         PersistenceRecord record = Assert.Single(records);
         Assert.Equal("CaYaTraceProbe", record.Identity);
-        Assert.Equal(@"C:\ProgramData\Probe\rollcall.exe", record.Command);
+        Assert.Equal(@"C:\ProgramData\Probe\agent.exe", record.Command);
     }
 
     /// <summary>
@@ -318,7 +318,7 @@ public sealed class PersistenceAnalyzerTests
                 Target = @"\CaYaTraceProbeTask",
                 Target2 = "task",
                 Details = """
-                    {"Path":"\\CaYaTraceProbeTask","Definition":"<?xml version=\"1.0\"?><Task><Actions><Exec><Command>C:\\ProgramData\\Probe\\rollcall.exe</Command><Arguments>-quiet</Arguments></Exec></Actions></Task>"}
+                    {"Path":"\\CaYaTraceProbeTask","Definition":"<?xml version=\"1.0\"?><Task><Actions><Exec><Command>C:\\ProgramData\\Probe\\agent.exe</Command><Arguments>-quiet</Arguments></Exec></Actions></Task>"}
                     """,
                 Source = EvidenceSource.SnapshotDiff,
                 Confidence = AttributionConfidence.None,
@@ -326,7 +326,7 @@ public sealed class PersistenceAnalyzerTests
         }));
 
         Assert.Equal(PersistenceKind.ScheduledTask, record.Kind);
-        Assert.Equal(@"C:\ProgramData\Probe\rollcall.exe -quiet", record.Command);
+        Assert.Equal(@"C:\ProgramData\Probe\agent.exe -quiet", record.Command);
     }
 
     /// <summary>
@@ -406,13 +406,13 @@ public sealed class PersistenceAnalyzerTests
 
         PersistenceRecord record = Assert.Single(new PersistenceAnalyzer().Analyze(new[]
         {
-            Registry(Key, "Path", @"\e-Kilit\Informer", 1),
+            Registry(Key, "Path", @"\Contoso\Notifier", 1),
             Registry(Key, "Actions", @"C:\WINDOWS\SysWOW64\7669\Informer.exe", 2),
             Registry(Key, "DynamicInfo", "30006", 3),
         }));
 
         Assert.Equal(PersistenceKind.ScheduledTask, record.Kind);
-        Assert.Equal(@"\e-Kilit\Informer", record.Command);
+        Assert.Equal(@"\Contoso\Notifier", record.Command);
 
         // The churn value is dropped, the two real ones are kept.
         Assert.Equal(2, record.Values.Count);

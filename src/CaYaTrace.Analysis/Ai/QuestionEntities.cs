@@ -218,7 +218,7 @@ public sealed class SessionVocabulary
     /// <summary>Names from the session that appear in the question.</summary>
     /// <remarks>
     /// Longest first, so asking about <c>helper64.dll</c> does not also report
-    /// <c>msdatacomp64</c> as a separate thing when both are in the vocabulary.
+    /// <c>vendorcomp64</c> as a separate thing when both are in the vocabulary.
     /// </remarks>
     private static List<string> Known(Dictionary<string, string> vocabulary, string question)
     {

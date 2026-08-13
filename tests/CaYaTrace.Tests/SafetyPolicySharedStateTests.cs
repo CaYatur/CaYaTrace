@@ -85,7 +85,7 @@ public sealed class SafetyPolicySharedStateTests
     /// happen. These are the shapes a removal has to keep being able to act on.
     /// </remarks>
     [Theory]
-    [InlineData(@"HKLM\SOFTWARE\e-Kilit")]
+    [InlineData(@"HKLM\SOFTWARE\Contoso")]
     [InlineData(@"HKLM\SYSTEM\CurrentControlSet\Services\bf6e56533c2749ec")]
     [InlineData(@"HKCU\SOFTWARE\SomeVendor\SomeProduct")]
     public void StillAllowsTheSubjectsOwnKeys(string key)

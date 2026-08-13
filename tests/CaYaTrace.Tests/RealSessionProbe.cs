@@ -63,6 +63,16 @@ public sealed class RealSessionProbe
             _out.WriteLine($"{item.Kind,-14} {item.Target}    [{item.Rationale}]");
 
         _out.WriteLine(new string('-', 78));
+        _out.WriteLine($"excluded ({shipped.Excluded.Count}):");
+        foreach (IGrouping<string, RemovalPlanner.ExcludedItem> group in
+                 shipped.Excluded.GroupBy(static e => e.Reason).OrderByDescending(static g => g.Count()))
+        {
+            _out.WriteLine($"    {group.Count(),4}  {group.Key}");
+            foreach (RemovalPlanner.ExcludedItem item in group.Take(60))
+                _out.WriteLine($"          {item.Kind,-12} {item.Target}");
+        }
+
+        _out.WriteLine(new string('-', 78));
         _out.WriteLine($"program directory: {shipped.Footprint.Directory}");
         _out.WriteLine($"rejected as loader search probes ({shipped.Footprint.SearchProbes.Count}):");
         foreach (string probe in shipped.Footprint.SearchProbes) _out.WriteLine($"        {probe}");

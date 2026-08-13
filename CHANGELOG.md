@@ -4,6 +4,51 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.5] — 2026-08-13
+
+### Fixed
+
+**A program that installs itself into a Windows directory was invisible to the removal
+plan.** Everything under `System32`, `SysWOW64` and the Windows directory was refused
+outright as Windows-owned, which is right for Windows' own files and wrong for a program
+that put its own there — and programs do, deliberately, because it is the one place an
+uninstaller is guaranteed not to look.
+
+Measured on a real recording of an installer: **forty-five files written into `SysWOW64`** —
+a service binary, two DLLs beside Windows' own, and a folder of forty more — every one
+refused, and a plan to remove the program that listed six items, none of which was the
+program. The recording had seen all forty-five and named the process that wrote them.
+
+The question is now whose file it is rather than which folder it is in, and a recording can
+answer that: the file was not there when it started, and the subject wrote it. Windows' own
+libraries are never created during a recording.
+
+Three things still hold, and the second is the one that does the work:
+
+- **The directories themselves are never removable.** No plan can name `System32`, on any
+  evidence.
+- **A list of stores Windows keeps on every program's behalf stays refused whoever created
+  the file** — the signature catalog, the component store, the registry hives, the driver
+  store, Prefetch, the installer cache, Fonts. That list is not decoration: the same
+  recording produced two creations under `catroot2` attributed to a `powershell.exe` inside
+  the subject's own process tree. Genuinely created, genuinely in scope, and absolutely not
+  the installer's — the catalog store is how Windows knows whether anything is signed.
+- **The verdict is a confirmation, not a permission.** These rows are marked in the plan and
+  carry the reason, so a path inside a Windows directory can never read like a path on the
+  desktop, and the runner re-checks the signature of what is actually on disk before it
+  moves anything.
+
+Plan on that session: **6 items → 52**, matching what a dedicated uninstaller found on its
+own run of the same program, while `catroot`/`catroot2` and Defender's own platform DLLs
+stayed refused.
+
+**A folder the program made was listed as a file.** A directory is a file with a flag set,
+so creating one produces an ordinary file create — which read wrong and, worse, ordered
+wrong: files are removed before folders precisely so a folder is empty when its turn comes.
+Which entries are folders is now read off the evidence — anything other recorded paths sit
+inside — so the answer is the same on the machine that recorded the session and the machine
+that applies the plan, which a disk check would not be.
+
 ## [0.5.4] — 2026-08-13
 
 ### Fixed

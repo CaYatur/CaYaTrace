@@ -130,6 +130,24 @@ public sealed record RemovalItem
     /// <summary>Why this is in the plan, shown to the operator before they approve.</summary>
     public required string Rationale { get; init; }
 
+    /// <summary>
+    /// The recording watched the subject bring this into existence.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Not a detail of the rationale — the safety policy reads it. A file inside a Windows
+    /// directory is Windows' own unless something is known about where it came from, and
+    /// this is the only thing that can be known: it was not there when the recording
+    /// started, and the subject wrote it.
+    /// </para>
+    /// <para>
+    /// Set only for a creation. A program that <em>wrote to</em> a file Windows already
+    /// had has not taken ownership of it, and the difference decides whether an installer's
+    /// dropped service binary can be removed or whether the machine's own libraries can.
+    /// </para>
+    /// </remarks>
+    public bool Created { get; init; }
+
     /// <summary>Observation sequence numbers this was derived from.</summary>
     public List<long> Evidence { get; init; } = new();
 

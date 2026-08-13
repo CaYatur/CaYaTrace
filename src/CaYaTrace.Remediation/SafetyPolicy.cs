@@ -60,6 +60,53 @@ public sealed class SafetyPolicy
     };
 
     /// <summary>
+    /// Parts of a Windows directory that stay Windows' whoever created the file.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A program that installs itself into <c>System32</c> can have what it put there
+    /// removed — see <see cref="EvaluateFile(string,bool)"/> — and these are the places
+    /// where that reasoning does not hold. Every one of them is a store Windows maintains
+    /// on other programs' behalf: files appear in it constantly, attributed to whatever
+    /// happened to trigger the work, and none of them belong to the thing that triggered
+    /// it.
+    /// </para>
+    /// <para>
+    /// The case that made this list necessary: a recording of an installer produced two
+    /// creations under <c>catroot2</c> attributed to <c>powershell.exe</c>, which was
+    /// inside the subject's process tree. The catalog store is not the installer's. It is
+    /// how Windows knows whether anything on the machine is signed.
+    /// </para>
+    /// </remarks>
+    private static readonly string[] WindowsInternalTokens =
+    {
+        // The signature catalog store. Files land here whenever anything is verified.
+        @"%SYSTEM32%\catroot", @"%SYSTEM32%\catroot2",
+        @"%SYSWOW64%\catroot", @"%SYSWOW64%\catroot2",
+
+        // The registry itself, and its logs.
+        @"%SYSTEM32%\config",
+
+        // Servicing: the component store, the update cache, the side-by-side assemblies.
+        @"%WINDIR%\WinSxS", @"%WINDIR%\servicing", @"%WINDIR%\SoftwareDistribution",
+        @"%WINDIR%\assembly", @"%WINDIR%\Microsoft.NET", @"%WINDIR%\Installer",
+
+        // Drivers and their store, and the INF cache that indexes them.
+        @"%SYSTEM32%\DriverStore", @"%SYSWOW64%\DriverStore", @"%WINDIR%\INF",
+
+        // Windows' own record that something ran, and its scratch space.
+        @"%WINDIR%\Prefetch", @"%WINDIR%\Temp", @"%WINDIR%\SystemTemp",
+        @"%SYSTEM32%\LogFiles", @"%SYSWOW64%\LogFiles",
+        @"%SYSTEM32%\winevt", @"%SYSWOW64%\winevt",
+
+        // Registered elsewhere and removed by name, never as a file on disk.
+        @"%SYSTEM32%\Tasks", @"%SYSWOW64%\Tasks",
+
+        // Shared by every program that draws text.
+        @"%WINDIR%\Fonts",
+    };
+
+    /// <summary>
     /// Directories that must never be removed as a unit, though items inside them can
     /// be. Deleting the container takes every unrelated program with it.
     /// </summary>
@@ -313,7 +360,7 @@ public sealed class SafetyPolicy
     /// </remarks>
     public SafetyDecision Evaluate(RemovalItem item) => item.Kind switch
     {
-        RemovalKind.File or RemovalKind.Directory => EvaluateFile(_paths.Expand(item.Target)),
+        RemovalKind.File or RemovalKind.Directory => EvaluateFile(_paths.Expand(item.Target), item.Created),
 
         RemovalKind.RegistryValue => EvaluateSplitValue(item),
 
@@ -339,7 +386,43 @@ public sealed class SafetyPolicy
         return EvaluateRegistryValue(key, value);
     }
 
-    public SafetyDecision EvaluateFile(string path)
+    public SafetyDecision EvaluateFile(string path) => EvaluateFile(path, created: false);
+
+    /// <summary>
+    /// Whether a file may be removed, given what is known about where it came from.
+    /// </summary>
+    /// <param name="created">
+    /// The recording watched the subject create this file, rather than merely touch a file
+    /// that was already there.
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// <b>Why provenance changes the answer inside a Windows directory.</b> Refusing
+    /// everything under <c>System32</c> is right for Windows' own files and wrong for a
+    /// program that installs itself there — and programs do, deliberately, because it is
+    /// the one place an uninstaller is guaranteed not to look. Measured on a real
+    /// recording of an installer: forty-five files written into <c>SysWOW64</c>, including
+    /// a service binary, a folder of forty more, and two DLLs beside them. Every one was
+    /// refused as Windows-owned and the plan to remove the program listed six items, none
+    /// of which was the program.
+    /// </para>
+    /// <para>
+    /// So the question becomes whose file it is rather than which folder it is in, and a
+    /// recording can answer that: the file was not there when it started, and the subject
+    /// wrote it. Windows' own libraries are never created during a recording — they were
+    /// there before it and are there after.
+    /// </para>
+    /// <para>
+    /// <b>Three things still hold.</b> The directories themselves are never removable, so
+    /// no plan can ever name <c>System32</c>. <see cref="WindowsInternalTokens"/> stays
+    /// refused whoever created the file, because Windows writes into those stores on other
+    /// programs' behalf and attribution there means nothing. And the verdict is a
+    /// confirmation rather than a permission, so the operator is told the file is inside a
+    /// Windows directory before they approve it, and the runner re-checks the signature of
+    /// what is actually on disk before it moves anything.
+    /// </para>
+    /// </remarks>
+    public SafetyDecision EvaluateFile(string path, bool created)
     {
         if (string.IsNullOrWhiteSpace(path))
             return SafetyDecision.Forbid("empty path");
@@ -359,13 +442,24 @@ public sealed class SafetyPolicy
                 return SafetyDecision.Forbid($"{forbidden} is a shared container and is never removed as a unit");
         }
 
+        foreach (string internals in WindowsInternalTokens)
+        {
+            if (Under(token, internals))
+                return SafetyDecision.Forbid($"{internals} is a store Windows keeps on every program's behalf");
+        }
+
         foreach (string forbidden in ForbiddenPathTokens)
         {
-            if (token.StartsWith(forbidden, StringComparison.OrdinalIgnoreCase)
-                && (token.Length == forbidden.Length || token[forbidden.Length] == '\\'))
-            {
+            if (!Under(token, forbidden)) continue;
+
+            // The directory itself, never, on any evidence.
+            if (token.TrimEnd('\\').Length == forbidden.Length)
                 return SafetyDecision.Forbid($"{forbidden} is Windows-owned");
-            }
+
+            if (!created) return SafetyDecision.Forbid($"{forbidden} is Windows-owned");
+
+            return SafetyDecision.Confirm(
+                $"inside {forbidden}, but the recording watched the program create it there");
         }
 
         foreach (string cache in SharedCachePathTokens)
@@ -415,6 +509,22 @@ public sealed class SafetyPolicy
         return familiar
             ? SafetyDecision.Allow()
             : SafetyDecision.Confirm("outside the usual installation locations");
+    }
+
+    /// <summary>
+    /// True when a tokenised path is the given folder or something inside it.
+    /// </summary>
+    /// <remarks>
+    /// On a separator boundary, so <c>%WINDIR%\Fonts</c> does not also claim
+    /// <c>%WINDIR%\FontsBackup</c> — the kind of near-match that makes a deny list read
+    /// as though it covers more than it does.
+    /// </remarks>
+    private static bool Under(string token, string folder)
+    {
+        string trimmed = token.TrimEnd('\\');
+
+        return trimmed.StartsWith(folder, StringComparison.OrdinalIgnoreCase)
+               && (trimmed.Length == folder.Length || trimmed[folder.Length] == '\\');
     }
 
     public SafetyDecision EvaluateRegistryKey(string keyPath)

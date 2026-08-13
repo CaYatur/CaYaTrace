@@ -530,7 +530,8 @@
     "outcome.skippedfingerprintmismatch": "Different file",
     "outcome.skippedbyoperator": "Kept",
     "outcome.failed": "In the way",
-    "outcome.pending": "Waiting"
+    "outcome.pending": "Waiting",
+    "remediate.caution": "act on this one deliberately"
   },
   "tr": {
     "app.title": "CaYaTrace",
@@ -1051,6 +1052,7 @@
     "outcome.skippedfingerprintmismatch": "Farklı dosya",
     "outcome.skippedbyoperator": "Bırakıldı",
     "outcome.failed": "Engellendi",
-    "outcome.pending": "Bekliyor"
+    "outcome.pending": "Bekliyor",
+    "remediate.caution": "bunu bilerek onaylayın"
   }
 }

@@ -52,14 +52,14 @@ public sealed class QuarantineTests : IDisposable
     [Fact]
     public void ListsWhatTheRunnerRecordedMoving()
     {
-        string held = Held("C/ProgramData/Probe/rollcall.exe");
-        string original = Path.Combine(_root, "origin", "rollcall.exe");
+        string held = Held("C/ProgramData/Probe/agent.exe");
+        string original = Path.Combine(_root, "origin", "agent.exe");
 
         Journal(new
         {
             at = DateTimeOffset.UtcNow,
             kind = "filesystem",
-            target = @"%PROGRAMDATA%\Probe\rollcall.exe",
+            target = @"%PROGRAMDATA%\Probe\agent.exe",
             payload = new { original, quarantined = held, isDirectory = false },
         });
 
@@ -115,8 +115,8 @@ public sealed class QuarantineTests : IDisposable
     [Fact]
     public void PutsAFileBackWhereItCameFrom()
     {
-        string held = Held("C/ProgramData/Probe/rollcall.exe", "the original bytes");
-        string original = Path.Combine(_root, "origin", "rollcall.exe");
+        string held = Held("C/ProgramData/Probe/agent.exe", "the original bytes");
+        string original = Path.Combine(_root, "origin", "agent.exe");
 
         Journal(new
         {
@@ -144,8 +144,8 @@ public sealed class QuarantineTests : IDisposable
     [Fact]
     public void RefusesToRestoreOverSomethingThatIsThereNow()
     {
-        string held = Held("C/ProgramData/Probe/rollcall.exe");
-        string original = Path.Combine(_root, "origin", "rollcall.exe");
+        string held = Held("C/ProgramData/Probe/agent.exe");
+        string original = Path.Combine(_root, "origin", "agent.exe");
 
         Directory.CreateDirectory(Path.GetDirectoryName(original)!);
         File.WriteAllText(original, "something else lives here now");
@@ -206,14 +206,14 @@ public sealed class QuarantineTests : IDisposable
     [Fact]
     public void DeletesWhatItIsHolding()
     {
-        string held = Held("C/ProgramData/Probe/rollcall.exe");
+        string held = Held("C/ProgramData/Probe/agent.exe");
 
         Journal(new
         {
             at = DateTimeOffset.UtcNow,
             kind = "filesystem",
             target = "probe",
-            payload = new { original = Path.Combine(_root, "origin", "rollcall.exe"), quarantined = held, isDirectory = false },
+            payload = new { original = Path.Combine(_root, "origin", "agent.exe"), quarantined = held, isDirectory = false },
         });
 
         var quarantine = new Quarantine(_root);

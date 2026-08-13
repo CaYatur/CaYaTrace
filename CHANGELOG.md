@@ -4,6 +4,29 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] — 2026-08-13
+
+### Fixed
+
+**A system-wide recording produced a removal plan of almost nothing.** Scope is marked
+relative to a root process and a system-wide recording has none, so no process was ever
+in scope, every observation carrying an actor was discarded, and the only survivors were
+the handful that carry none. Measured on a real recording of an installer: 759,179 file
+operations and 1,048,112 registry operations went in and **two items** came out.
+
+Scope cannot be the filter when there is no subject. What replaces it is the signature of
+whatever made the change: Windows is busy during any recording — Delivery Optimization
+counters, Explorer's pane state, Defender's timestamps — and every one of those is written
+by something Microsoft signed, while nothing a third-party installer drops is. The
+machine's own housekeeping is excluded by who did it rather than by where it landed, which
+needs no list of paths to maintain and cannot accidentally exclude a program that installs
+itself somewhere unusual.
+
+The same recording now yields **1,264 items** — 536 individual files, 351 registry values,
+375 keys — including the subject registering itself under `SafeBoot\Minimal`, which is how
+a program arranges to keep running in Safe Mode and was previously absent from the plan
+entirely.
+
 ## [0.5.0] — 2026-08-13
 
 ### Added

@@ -46,18 +46,35 @@ internal static class LocalPortOwner
     private static DateTimeOffset _taken = DateTimeOffset.MinValue;
 
     /// <summary>
-    /// The reading at which a forced refresh already happened.
+    /// Ports that were still absent from a table read *after* they were asked about.
     /// </summary>
     /// <remarks>
-    /// Stops a port that genuinely has no owner — a connection already closed — from
-    /// forcing a table read on every lookup for as long as it keeps being asked about.
+    /// <para>
+    /// The reason a second read is worth doing at all is that a miss is usually a
+    /// connection newer than the cache. Once a port has missed a reading taken after the
+    /// question was asked, though, it is genuinely unowned, and asking again cannot change
+    /// that until the table moves on. Remembering which ports those were is what stops one
+    /// closed connection re-reading the table on every lookup.
+    /// </para>
+    /// <para>
+    /// This replaces a throttle that allowed a single forced read per cache generation,
+    /// which is a completely different rule and a badly wrong one: the *first* miss in a
+    /// second got its answer and every other miss in that second was told "nobody owns
+    /// this" without anybody looking. Connections arrive in bursts, so in practice that was
+    /// almost all of them — measured, with a test that opens six connections in a row and
+    /// resolves each: one succeeded and five were attributed to nobody. In the proxy that
+    /// meant unattributed traffic, and unattributed traffic is kept.
+    /// </para>
     /// </remarks>
-    private static DateTimeOffset _lastForced = DateTimeOffset.MinValue;
+    private static readonly HashSet<ushort> ConfirmedMissing = new();
 
     private static void Refresh()
     {
         _ports = Read();
         _taken = DateTimeOffset.UtcNow;
+
+        // A new reading says nothing about what the old one failed to find.
+        ConfirmedMissing.Clear();
     }
 
     /// <summary>The process id owning <paramref name="port"/>, or zero if not known.</summary>
@@ -72,16 +89,13 @@ internal static class LocalPortOwner
             uint owner = _ports.GetValueOrDefault(port);
             if (owner != 0) return owner;
 
-            // A miss on a cached table is usually a connection newer than the table, not
-            // a connection with no owner — so look once more before answering "unknown".
-            // Measured: with the cache alone, a request that arrived just after a refresh
-            // was attributed to nobody, and an unattributed exchange is one a scoped
-            // session keeps rather than excludes.
-            if (_taken == _lastForced) return 0;
+            if (ConfirmedMissing.Contains(port)) return 0;
 
             Refresh();
-            _lastForced = _taken;
-            return _ports.GetValueOrDefault(port);
+
+            owner = _ports.GetValueOrDefault(port);
+            if (owner == 0) ConfirmedMissing.Add(port);
+            return owner;
         }
     }
 

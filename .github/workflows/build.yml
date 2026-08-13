@@ -32,7 +32,16 @@ jobs:
       - name: Test
         # The correlation layer is free of ETW and SQLite dependencies precisely so
         # it can be verified here without elevation.
-        run: dotnet test tests/CaYaTrace.Tests/CaYaTrace.Tests.csproj --no-build -c Release --verbosity normal
+        #
+        # Through the solution, not the test project directly, and that is the whole
+        # point: this repository declares <Platforms>x64;ARM64</Platforms>, so a solution
+        # build resolves to x64 and writes bin/x64/Release, while building the .csproj on
+        # its own falls back to AnyCPU and writes bin/Release. Naming the project here
+        # with --no-build therefore looked for an assembly the build step never produced,
+        # and the run failed with "the test source file provided was not found" — a
+        # missing file, not a failing test. Going through the solution makes the two steps
+        # agree by construction instead of by a duplicated platform flag.
+        run: dotnet test CaYaTrace.sln --no-build -c Release --verbosity normal
 
       - name: Publish portable executable
         run: >

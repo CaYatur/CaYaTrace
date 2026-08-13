@@ -167,6 +167,7 @@ public sealed class WinsockCollector : ICollector
             _events++;
             string name = data.EventName ?? string.Empty;
 
+
             // Most operations are reported twice, on entry and on exit, and which one is
             // useful depends on the field being read.
             //
@@ -227,15 +228,48 @@ public sealed class WinsockCollector : ICollector
                 return;
             }
 
+            // Sends nest, and receives do not. Measured, on a probe that sent exactly three
+            // buffers of exactly ten bytes:
+            //
+            //     enter loc=3047  len=10     the send API is entered
+            //     enter loc=3056  len=10     an inner path is entered
+            //     exit  loc=3073  len=10     the inner path returns
+            //     exit  loc=3051  len=10     the send API returns
+            //
+            // Counting every exit therefore reported six sends of sixty bytes for three
+            // sends of thirty — every conversation in the session doubled, in the two
+            // numbers an analyst reads first. A receive is a single pair (capacity on
+            // enter, actual on exit) and is counted on its exit, unchanged.
+            //
+            // Sends are counted on the outermost *enter* instead, which for a send carries
+            // the same length as its exit. "Outermost" needs no knowledge of those location
+            // ids: it is simply an enter arriving while no send is open on this socket and
+            // thread, and any exit closes it again. The outer pair is exactly matched in
+            // the trace even where the inner one is not, so this cannot drift.
             if (name.StartsWith("AfdSend", StringComparison.Ordinal))
             {
-                long bytes = phase == PhaseExit ? ReadLength(data) : 0;
-                Track(endpoint, (uint)data.ProcessID, data.TimeStamp, socket =>
+                var site = (endpoint, data.ThreadID);
+
+                if (phase != PhaseExit)
                 {
-                    socket.BytesSent += bytes;
-                    if (bytes > 0) socket.Sends++;
-                    socket.Remote ??= ReadAddress(data);
-                });
+                    if (!_openSends.Add(site)) return;
+
+                    long bytes = ReadLength(data);
+                    Track(endpoint, (uint)data.ProcessID, data.TimeStamp, socket =>
+                    {
+                        socket.BytesSent += bytes;
+                        if (bytes > 0) socket.Sends++;
+                        socket.Remote ??= ReadAddress(data);
+                    });
+                    return;
+                }
+
+                _openSends.Remove(site);
+
+                // An exit still carries the peer address, which is worth having on a socket
+                // that never produced one on the way in.
+                Track(endpoint, (uint)data.ProcessID, data.TimeStamp,
+                    socket => socket.Remote ??= ReadAddress(data));
                 return;
             }
 
@@ -356,6 +390,17 @@ public sealed class WinsockCollector : ICollector
 
     private const int PhaseEnter = 0;
     private const int PhaseExit = 1;
+
+    /// <summary>
+    /// Sockets and threads with a send already in progress, so the nested report of the
+    /// same send is not counted a second time.
+    /// </summary>
+    /// <remarks>
+    /// Keyed on the thread as well as the socket because a socket written to from two
+    /// threads has two independent sends in flight, and one of them closing must not make
+    /// the other's inner report look like a new send.
+    /// </remarks>
+    private readonly HashSet<(ulong Endpoint, int Thread)> _openSends = new();
 
     /// <summary>Whether this report is the operation going in or coming back.</summary>
     /// <remarks>

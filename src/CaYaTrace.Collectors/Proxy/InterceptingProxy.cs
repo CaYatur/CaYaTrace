@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -86,6 +86,15 @@ public sealed class InterceptingProxy : IAsyncDisposable
     /// <summary>Exchanges seen but not kept, because they were another program's.</summary>
     public long OtherProcessExchanges => Interlocked.Read(ref _otherProcesses);
 
+    /// <summary>
+    /// Exchanges kept although nothing on the machine could say whose they were.
+    /// </summary>
+    /// <remarks>
+    /// Reported because these are the only ones in a scoped session that might not belong
+    /// to the subject. A count of zero is the ordinary case and says the scoping was exact.
+    /// </remarks>
+    public long UnattributedExchanges => Interlocked.Read(ref _unattributed);
+
     public void Start()
     {
         _listener = new TcpListener(IPAddress.Loopback, _options.Port);
@@ -141,19 +150,24 @@ public sealed class InterceptingProxy : IAsyncDisposable
         // them, and the connection is established right now, so it has an answer — which
         // matters twice over: an unattributed exchange cannot be tied to a program, and
         // it cannot be excluded from a session recorded to watch one either.
-        if (attribution.Owner == ProcessKey.None)
+        //
+        // Asked unconditionally, and kept even when it names a process the session has
+        // never heard of. That case is not a failure to attribute — it is Windows saying
+        // the traffic belongs to somebody else, which is the single most useful thing it
+        // can say when the proxy is machine-wide and the session is not.
+        uint ownerPid = Network.LocalPortOwner.Resolve(clientPort);
+
+        if (attribution.Owner == ProcessKey.None && ownerPid != 0)
         {
-            uint pid = Network.LocalPortOwner.Resolve(clientPort);
-            if (pid != 0)
+            ProcessKey owner = _ctx.Processes.Resolve(ownerPid, DateTimeOffset.UtcNow);
+            if (owner != ProcessKey.None)
             {
-                ProcessKey owner = _ctx.Processes.Resolve(pid, DateTimeOffset.UtcNow);
-                if (owner != ProcessKey.None)
-                {
-                    attribution = new Core.Correlation.FlowAttribution(
-                        owner, AttributionConfidence.Probable, "local-port-table");
-                }
+                attribution = new Core.Correlation.FlowAttribution(
+                    owner, AttributionConfidence.Probable, "local-port-table");
             }
         }
+
+        var origin = new ClientOrigin(attribution, ownerPid);
 
         NetworkStream network = client.GetStream();
         var reader = new HttpMessageReader(network);
@@ -163,17 +177,34 @@ public sealed class InterceptingProxy : IAsyncDisposable
 
         if (string.Equals(request.Method, "CONNECT", StringComparison.OrdinalIgnoreCase))
         {
-            await HandleConnectAsync(client, network, reader, request, attribution).ConfigureAwait(false);
+            await HandleConnectAsync(client, network, reader, request, origin).ConfigureAwait(false);
             return;
         }
 
-        await HandlePlainAsync(network, reader, request, attribution).ConfigureAwait(false);
+        await HandlePlainAsync(network, reader, request, origin).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Who the other end of a proxied connection is, as well as it can be established.
+    /// </summary>
+    /// <param name="Attribution">
+    /// The process the session knows about, where one could be matched.
+    /// </param>
+    /// <param name="OwnerPid">
+    /// What Windows says owns the client port, whether or not the session tracks it.
+    /// Zero when Windows had no answer either.
+    /// </param>
+    /// <remarks>
+    /// The two are carried separately on purpose. Collapsing them loses the difference
+    /// between "nobody knows who sent this" and "Windows knows, and it was not the
+    /// subject" — and that difference is the whole of the scoping decision.
+    /// </remarks>
+    private readonly record struct ClientOrigin(
+        Core.Correlation.FlowAttribution Attribution, uint OwnerPid);
 
     /// <summary>Handles a plaintext HTTP request forwarded through the proxy.</summary>
     private async Task HandlePlainAsync(
-        Stream clientStream, HttpMessageReader reader, HttpRequestLine request,
-        Core.Correlation.FlowAttribution attribution)
+        Stream clientStream, HttpMessageReader reader, HttpRequestLine request, ClientOrigin origin)
     {
         Dictionary<string, string> headers = await reader.ReadHeadersAsync(_shutdown.Token).ConfigureAwait(false);
         byte[] body = await reader.ReadBodyAsync(headers, _options.MaxBodyBytes, _shutdown.Token).ConfigureAwait(false);
@@ -186,12 +217,12 @@ public sealed class InterceptingProxy : IAsyncDisposable
 
         if (target is null) return;
 
-        long requestSeq = Record(EventAction.HttpRequest, attribution, request.Method, target.ToString(), headers, body, 0);
+        long requestSeq = Record(EventAction.HttpRequest, origin, request.Method, target.ToString(), headers, body, 0);
 
         using var upstream = new TcpClient();
         await upstream.ConnectAsync(target.Host, target.Port, _shutdown.Token).ConfigureAwait(false);
 
-        await ForwardAsync(upstream.GetStream(), clientStream, request, headers, body, target, attribution, requestSeq)
+        await ForwardAsync(upstream.GetStream(), clientStream, request, headers, body, target, origin, requestSeq)
             .ConfigureAwait(false);
     }
 
@@ -201,7 +232,7 @@ public sealed class InterceptingProxy : IAsyncDisposable
     /// </summary>
     private async Task HandleConnectAsync(
         TcpClient client, NetworkStream network, HttpMessageReader reader, HttpRequestLine request,
-        Core.Correlation.FlowAttribution attribution)
+        ClientOrigin origin)
     {
         await reader.ReadHeadersAsync(_shutdown.Token).ConfigureAwait(false);
 
@@ -237,7 +268,7 @@ public sealed class InterceptingProxy : IAsyncDisposable
             // is the worst possible combination: a feature that is off, reporting nothing
             // wrong.
             Interlocked.Increment(ref _opaque);
-            RecordOpaque(host, port, attribution, $"{ex.GetType().Name}: {ex.Message}");
+            RecordOpaque(host, port, origin.Attribution, $"{ex.GetType().Name}: {ex.Message}");
             clientTls.Dispose();
             return;
         }
@@ -263,11 +294,11 @@ public sealed class InterceptingProxy : IAsyncDisposable
                     // The upstream certificate did not validate. CaYaTrace does not
                     // suppress that check: an analysis tool that ignores a bad server
                     // certificate would hide exactly the finding worth having.
-                    RecordOpaque(host, port, attribution, $"upstream TLS failed: {ex.GetType().Name}");
+                    RecordOpaque(host, port, origin.Attribution, $"upstream TLS failed: {ex.GetType().Name}");
                     return;
                 }
 
-                RecordTlsMetadata(host, serverTls, attribution);
+                RecordTlsMetadata(host, serverTls, origin.Attribution);
 
                 var inner = new HttpMessageReader(clientTls);
                 while (!_shutdown.IsCancellationRequested)
@@ -282,11 +313,11 @@ public sealed class InterceptingProxy : IAsyncDisposable
                         .ReadBodyAsync(headers, _options.MaxBodyBytes, _shutdown.Token).ConfigureAwait(false);
 
                     string url = $"https://{host}{inner_request.Target}";
-                    long seq = Record(EventAction.HttpRequest, attribution, inner_request.Method, url, headers, body, 0);
+                    long seq = Record(EventAction.HttpRequest, origin, inner_request.Method, url, headers, body, 0);
 
                     bool keepAlive = await ForwardAsync(
                         serverTls, clientTls, inner_request, headers, body,
-                        new Uri(url), attribution, seq).ConfigureAwait(false);
+                        new Uri(url), origin, seq).ConfigureAwait(false);
 
                     if (!keepAlive) break;
                 }
@@ -297,7 +328,7 @@ public sealed class InterceptingProxy : IAsyncDisposable
     /// <summary>Replays a request upstream and streams the response back, recording it.</summary>
     private async Task<bool> ForwardAsync(
         Stream upstream, Stream downstream, HttpRequestLine request, Dictionary<string, string> headers,
-        byte[] body, Uri target, Core.Correlation.FlowAttribution attribution, long requestSeq)
+        byte[] body, Uri target, ClientOrigin origin, long requestSeq)
     {
         var outbound = new StringBuilder();
         outbound.Append(request.Method).Append(' ')
@@ -326,7 +357,7 @@ public sealed class InterceptingProxy : IAsyncDisposable
         byte[] responseBody = await responseReader
             .ReadBodyAsync(responseHeaders, _options.MaxBodyBytes, _shutdown.Token).ConfigureAwait(false);
 
-        Record(EventAction.HttpResponse, attribution, status.Code.ToString(), target.ToString(),
+        Record(EventAction.HttpResponse, origin, status.Code.ToString(), target.ToString(),
             responseHeaders, responseBody, requestSeq);
 
         var back = new StringBuilder();
@@ -348,7 +379,7 @@ public sealed class InterceptingProxy : IAsyncDisposable
     }
 
     private long Record(
-        EventAction action, Core.Correlation.FlowAttribution attribution, string verbOrStatus,
+        EventAction action, ClientOrigin origin, string verbOrStatus,
         string url, Dictionary<string, string> headers, byte[] body, long causedBy)
     {
         // Traffic belonging to somebody else is not recorded when there is a subject.
@@ -361,7 +392,7 @@ public sealed class InterceptingProxy : IAsyncDisposable
         //
         // Counted rather than silently dropped, so the report can say the proxy saw more
         // than it kept.
-        if (!IsSubjects(attribution))
+        if (!IsSubjects(origin))
         {
             Interlocked.Increment(ref _otherProcesses);
             return 0;
@@ -389,8 +420,8 @@ public sealed class InterceptingProxy : IAsyncDisposable
             Timestamp = DateTimeOffset.UtcNow,
             Category = EventCategory.Http,
             Action = action,
-            Actor = attribution.Owner,
-            Confidence = attribution.Confidence,
+            Actor = origin.Attribution.Owner,
+            Confidence = origin.Attribution.Confidence,
             Target = url,
             Target2 = verbOrStatus,
             Bytes = body.Length,
@@ -421,22 +452,57 @@ public sealed class InterceptingProxy : IAsyncDisposable
     /// anything it started.
     /// </para>
     /// <para>
-    /// An exchange that could not be attributed is kept. The proxy sees only a loopback
-    /// socket, and the port-ownership table it resolves against can miss a short-lived
-    /// connection — dropping those would quietly lose the subject's own traffic to a
-    /// timing race, which is a worse failure than keeping a little extra.
+    /// The hard case is an exchange with no matched process, and this used to keep it. That
+    /// was wrong, and running the shipping build proved it: a session recording one
+    /// PowerShell script came back holding the operator's desktop-app telemetry — complete
+    /// with an API key in the query string — and the operating system's own connectivity
+    /// checks. Both were unattributed, so both were kept. Writing a third party's
+    /// credentials into someone's evidence file is a worse failure than any it prevented.
     /// </para>
+    /// <para>
+    /// So the question is asked of Windows instead, and there are two different answers
+    /// hiding behind "unattributed":
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><description>
+    ///     <b>Windows names a process the session does not track.</b> Not a failure to
+    ///     attribute — the session tracks the subject and everything it started, so a
+    ///     process outside that set is somebody else's, and the exchange is excluded.
+    ///   </description></item>
+    ///   <item><description>
+    ///     <b>Windows has no answer either.</b> A connection that closed inside the lookup
+    ///     window. Kept, because losing the subject's own traffic to a timing race is the
+    ///     failure that has no remedy — and it is counted, so the report can say so.
+    ///   </description></item>
+    /// </list>
     /// </remarks>
-    private bool IsSubjects(Core.Correlation.FlowAttribution attribution)
+    private bool IsSubjects(ClientOrigin origin)
     {
         if (_ctx.Session.RootProcess == ProcessKey.None) return true;
-        if (attribution.Owner == ProcessKey.None) return true;
 
-        ProcessNode? node = _ctx.Processes.Get(attribution.Owner);
-        return node is null || node.InScope;
+        if (origin.Attribution.Owner != ProcessKey.None)
+        {
+            ProcessNode? node = _ctx.Processes.Get(origin.Attribution.Owner);
+            return node is null || node.InScope;
+        }
+
+        // Nobody owns it as far as Windows is concerned. Rare, and kept.
+        if (origin.OwnerPid == 0)
+        {
+            Interlocked.Increment(ref _unattributed);
+            return true;
+        }
+
+        // Windows named somebody, and the session has never seen them. That includes the
+        // proxy's own upstream connections, which is as it should be: a tool has no
+        // business recording itself into the evidence it is collecting.
+        return false;
     }
 
     private long _otherProcesses;
+
+    /// <summary>Exchanges kept although nothing could say whose they were.</summary>
+    private long _unattributed;
 
     private void NoteConnectionFault(Exception ex)
     {

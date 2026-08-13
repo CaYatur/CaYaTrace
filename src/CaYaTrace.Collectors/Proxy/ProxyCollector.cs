@@ -221,6 +221,18 @@ public sealed class ProxyCollector : ICollector
                     $"{_proxy.OtherProcessExchanges:N0} exchanges belonged to other programs on this "
                     + "machine and were not recorded. Record system-wide to keep them.");
             }
+
+            // The one number that says how exact the scoping was. Everything else in this
+            // session was either matched to the subject or excluded because Windows named
+            // somebody else; these were kept without either being true.
+            if (_proxy.UnattributedExchanges > 0)
+            {
+                _ctx.Store.LogQuality(Name, "warning",
+                    $"{_proxy.UnattributedExchanges:N0} recorded exchange(s) could not be traced to any "
+                    + "process — the connection had already closed when ownership was looked up. They are "
+                    + "kept because losing the subject's own traffic to a timing race is worse, but they "
+                    + "are the ones to doubt if something here looks like it came from elsewhere.");
+            }
         }
 
         if (_backup is not null) RestoreSystemProxy(_backup);

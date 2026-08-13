@@ -1278,3 +1278,21 @@ table.data td.wide { max-width: 520px; }
   overflow: auto;
   white-space: pre;
 }
+
+/*
+ * An HTTP row that can be opened, and what opens under it.
+ *
+ * The detail sits inside the table rather than in a dialog because reading exchanges is a
+ * comparative act — which request carried the machine name, which POST has the payload —
+ * and a dialog forces you to close one before looking at the next.
+ */
+tr.expandable { cursor: pointer; }
+tr.expandable:hover { background: var(--bg-dark); }
+
+.exchange-detail > td {
+  background: var(--bg-dark);
+  padding: 10px 12px;
+
+  /* Long header values must scroll inside the cell, not widen the table. */
+  overflow-x: auto;
+}

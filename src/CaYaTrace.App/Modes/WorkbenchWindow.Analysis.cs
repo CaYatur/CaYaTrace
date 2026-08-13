@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 using CaYaTrace.Analysis;
@@ -202,7 +202,9 @@ public sealed partial class WorkbenchWindow
 
     // --------------------------------------------------------------- remediation
 
-    private readonly record struct PlanOptions(bool IncludeModified, bool IncludeTemp, bool IncludeOutOfScope);
+    private readonly record struct PlanOptions(
+        bool IncludeModified, bool IncludeTemp, bool IncludeOutOfScope,
+        LeftoverDepth Sweep = LeftoverDepth.None);
 
     private void BuildPlan(JsonElement payload)
     {
@@ -211,7 +213,10 @@ public sealed partial class WorkbenchWindow
         var options = new PlanOptions(
             Bool(payload, "includeModified"),
             Bool(payload, "includeTemp"),
-            Bool(payload, "includeOutOfScope"));
+            Bool(payload, "includeOutOfScope"),
+            Enum.TryParse(Str(payload, "sweep"), ignoreCase: true, out LeftoverDepth depth)
+                ? depth
+                : LeftoverDepth.None);
 
         _planItems = BuildPlanItems(options);
         _quarantineRoot = Path.Combine(
@@ -229,7 +234,82 @@ public sealed partial class WorkbenchWindow
             ExcludeTemporary = !options.IncludeTemp,
         });
 
-        return planner.Build(_session!);
+        List<RemovalItem> items = planner.Build(_session!);
+
+        if (options.Sweep == LeftoverDepth.None) return items;
+
+        // The plan so far is everything the recording watched being created, which is the
+        // right foundation and cannot be the whole answer: a program installed before the
+        // recording started, or a component dropped by an installer that ran outside the
+        // traced scope, was never observed and so is never removed. That is the gap behind
+        // "it skips things that should be removed".
+        //
+        // The sweep asks the other question — what on this machine is named after it —
+        // and merges what it finds. Anything already in the plan wins, because an item
+        // derived from an observation carries evidence a name match does not.
+        LeftoverScan scan = Sweep(options.Sweep);
+
+        var known = new HashSet<string>(
+            items.Select(static i => $"{i.Kind}|{i.Target}|{i.ValueName}"),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (RemovalItem found in scan.Items)
+        {
+            if (known.Add($"{found.Kind}|{found.Target}|{found.ValueName}")) items.Add(found);
+        }
+
+        _sweepNote = scan.Note;
+        _sweepTerms = scan.Terms;
+
+        return items.OrderBy(static i => i.Order)
+                    .ThenBy(static i => i.Target, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+    }
+
+    private string? _sweepNote;
+    private IReadOnlyList<string> _sweepTerms = Array.Empty<string>();
+
+    /// <summary>
+    /// Runs the leftover sweep, using what the session knows about the subject as terms.
+    /// </summary>
+    /// <remarks>
+    /// The terms are drawn from the subject's own name and from the names and commands of
+    /// everything it registered to run again, because those are what a program actually
+    /// names its directories and keys after. Nothing generic survives the term filter, so
+    /// a session with no distinctive name to offer produces no sweep rather than a sweep
+    /// of the whole machine.
+    /// </remarks>
+    private LeftoverScan Sweep(LeftoverDepth depth)
+    {
+        var candidates = new List<string?>
+        {
+            _session?.Name,
+            _session?.TargetPath,
+        };
+
+        try
+        {
+            List<ProcessNode> processes = _store!.LoadProcesses();
+            var byKey = new Dictionary<ProcessKey, ProcessNode>();
+            foreach (ProcessNode node in processes) byKey.TryAdd(node.Key, node);
+
+            foreach (PersistenceRecord record in
+                     new PersistenceAnalyzer(byKey.GetValueOrDefault).Analyze(_store.Query()))
+            {
+                candidates.Add(record.Identity);
+                candidates.Add(record.DisplayName);
+                candidates.Add(record.Command);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            // The subject's own name is enough to sweep on.
+        }
+
+        IReadOnlyList<string> terms = LeftoverScanner.TermsFrom(candidates);
+
+        return new LeftoverScanner(Core.Naming.PathNormalizer.CreateForCurrentMachine())
+            .Scan(terms, depth);
     }
 
     private void PostPlan()
@@ -258,7 +338,17 @@ public sealed partial class WorkbenchWindow
             };
         }).ToList();
 
-        Post("plan", new { items, quarantine = _quarantineRoot });
+        Post("plan", new
+        {
+            items,
+            quarantine = _quarantineRoot,
+
+            // What the sweep searched for, so a match nobody expected is explainable
+            // rather than mysterious — and so an empty sweep can say it had no
+            // distinctive name to go on.
+            sweepTerms = _sweepTerms,
+            sweepNote = _sweepNote,
+        });
     }
 
     private void ExportPackage(JsonElement payload)

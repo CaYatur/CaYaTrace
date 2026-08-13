@@ -413,6 +413,49 @@ public static class SessionProjection
         return sb.ToString();
     }
 
+    /// <summary>Parses a details string, or an empty element when it is not one.</summary>
+    /// <remarks>
+    /// Details are written by whichever collector emitted the event, and not every one of
+    /// them writes JSON. A row with unreadable details is still a row worth showing.
+    /// </remarks>
+    private static JsonElement Facts(string? details)
+    {
+        if (string.IsNullOrEmpty(details)) return default;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(details);
+            return document.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return default;
+        }
+    }
+
+    /// <summary>
+    /// The header names and values out of a proxied exchange's details.
+    /// </summary>
+    /// <remarks>
+    /// The body's hash and length share the same object and are not headers, so they are
+    /// dropped here rather than rendered as though the server had sent them.
+    /// </remarks>
+    private static List<object> Headers(JsonElement facts)
+    {
+        var headers = new List<object>();
+        if (facts.ValueKind != JsonValueKind.Object) return headers;
+
+        foreach (JsonProperty property in facts.EnumerateObject())
+        {
+            if (property.Name is "body_sha256" or "body_bytes") continue;
+            if (property.Value.ValueKind != JsonValueKind.String) continue;
+
+            headers.Add(new { name = property.Name, value = property.Value.GetString() });
+        }
+
+        return headers;
+    }
+
     private static string? Text(JsonElement o, string name)
         => o.ValueKind == JsonValueKind.Object
            && o.TryGetProperty(name, out JsonElement v)
@@ -512,6 +555,15 @@ public static class SessionProjection
                 {
                     case EventCategory.Http when requests.Count < request.NetworkRowLimit:
                         bool isResponse = o.Action == EventAction.HttpResponse;
+
+                        // The proxy writes the headers and the body's hash into the
+                        // details as one flat object. Left as an opaque string, as it was,
+                        // the view could show a size and nothing else — so a POST that
+                        // uploaded 45 bytes was a row saying 45 bytes, with the bytes
+                        // themselves sitting unreachable in the session the whole time.
+                        JsonElement http = Facts(o.Details);
+                        string? httpBody = Text(http, "body_sha256");
+
                         requests.Add(new
                         {
                             seq = o.Seq,
@@ -532,6 +584,14 @@ public static class SessionProjection
                             source = o.Source.ToString(),
                             confidence = o.Confidence.ToString(),
                             details = o.Details,
+
+                            // Headers as a list rather than the raw object, so the view can
+                            // render them without knowing which keys are headers and which
+                            // are the body's bookkeeping.
+                            headers = Headers(http),
+                            bodyHash = httpBody,
+                            bodyBytes = Number(http, "body_bytes"),
+                            bodyPreview = Preview(store, httpBody, request),
                         });
                         break;
 

@@ -4,6 +4,46 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-08-13
+
+### Added
+
+**The contents of HTTP requests and responses.** The requests table showed a method, a URL
+and a size; the headers and the body were in the session the whole time with nothing to
+open them. A row now expands to show every header it carried and a button for the body — so
+a POST that uploaded 45 bytes shows the 45 bytes. They travel with an exported report too.
+
+**A sweep for what a program left behind.** The removal plan is built from the recording:
+every item in it is something the tool watched being created. That is the right foundation
+and it is not the whole answer, which is why removal was skipping things — anything
+installed before the recording started, or dropped by an installer that ran outside the
+traced scope, was never observed and so was never removed.
+
+The sweep asks the opposite question: what on this machine is named after it. Four depths,
+because how hard to look is the operator's choice and each one matches more loosely:
+
+- **None** — only what was recorded, as before.
+- **Safe** — directories and registry keys named after the program.
+- **Moderate** — also uninstall entries, services, App Paths, startup values and scheduled
+  tasks, matched on the names a person would recognise rather than on a GUID.
+- **Advanced** — also registry values anywhere under the software hives whose *data* points
+  at one of its directories. Slow, bounded, and it says when it stopped early.
+
+Nothing here deletes. It produces candidates with the reason each one matched, every one
+still passes the safety policy, and the operator approves the plan — a sweep that matched
+too widely is a list to uncheck rather than damage, which is the only way an aggressive
+search is safe to offer. The words being searched for are shown, so an unexpected match is
+explainable, and a name with nothing distinctive in it produces no sweep rather than a
+sweep of the whole machine.
+
+### Changed
+
+**A refused item stays in the plan, marked.** It used to be dropped, so an operator
+comparing the plan against what was still on their machine could not tell the difference
+between something the tool had not found and something it had decided not to touch. The
+first is a gap to report; the second is a judgement to argue with. The runner still refuses
+it — this changes what the plan says, not what it does.
+
 ## [0.4.2] — 2026-08-13
 
 Found by an operator who could see that a program had talked to something and not what it

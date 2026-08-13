@@ -128,10 +128,25 @@ public sealed class RemovalPlanner
         {
             HashSet<string> origins = originsByTarget[key];
             if (origins.Count < _options.MinimumOriginAgreement) continue;
-            if (policy.Evaluate(item).Verdict == SafetyVerdict.Forbidden) continue;
 
-            item.ObservedOn.AddRange(origins);
-            plan.Add(AttachTemplate(item));
+            SafetyDecision decision = policy.Evaluate(item);
+
+            // A refused item stays in the plan, marked, instead of vanishing from it.
+            //
+            // Dropping it produced the complaint that the remover "filters too much and
+            // skips things that should be removed": an operator comparing the plan against
+            // what was still on their machine had no way to tell the difference between
+            // something the tool had not found and something it had decided not to touch.
+            // The first is a gap to report; the second is a judgement to disagree with.
+            // Both need to be visible, and only one of them was.
+            //
+            // The runner still refuses it. This changes what the plan says, not what it does.
+            RemovalItem entry = decision.Verdict == SafetyVerdict.Forbidden
+                ? item with { Rationale = $"{item.Rationale} — will not be removed: {decision.Reason}" }
+                : item;
+
+            entry.ObservedOn.AddRange(origins);
+            plan.Add(AttachTemplate(entry));
         }
 
         return plan.OrderBy(static i => i.Order).ThenBy(static i => i.Target, StringComparer.OrdinalIgnoreCase).ToList();

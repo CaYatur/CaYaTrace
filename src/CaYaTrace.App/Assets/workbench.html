@@ -1309,6 +1309,15 @@ function renderNetwork() {
         // length only. Saying which prevents "no body" reading as "nothing was sent".
         bytes.title = r.source === 'Proxy' ? t('network.body_captured') : t('network.encrypted');
         tr.appendChild(bytes);
+
+        // A GET or a POST is a row of metadata until you can read what it carried. The
+        // headers and the body were in the session all along; the table showed a size.
+        if ((r.headers && r.headers.length) || r.bodyHash || r.bodyPreview) {
+          tr.classList.add('expandable');
+          tr.title = t('network.click_to_open');
+          tr.onclick = () => toggleExchange(tr, r);
+        }
+
         return tr;
       }));
   } else if (state.networkTab === 'flows') {
@@ -1788,6 +1797,27 @@ function renderPlanOptions() {
       label.appendChild(body);
       host.appendChild(label);
     });
+
+    // The sweep is a select rather than a checkbox because it is not on or off: each
+    // depth looks in more places and matches more loosely, and an operator choosing how
+    // hard to look is choosing how much they will have to uncheck afterwards.
+    const row = el('div');
+    row.style.marginTop = '10px';
+    row.appendChild(el('div', 't', t('remediate.sweep')));
+    row.appendChild(el('div', 'd', t('remediate.sweep_hint')));
+
+    const select = document.createElement('select');
+    select.id = 'plan_sweep';
+    select.style.marginTop = '6px';
+    select.style.maxWidth = '320px';
+    ['none', 'safe', 'moderate', 'advanced'].forEach(v => {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = t('remediate.sweep_' + v);
+      select.appendChild(o);
+    });
+    row.appendChild(select);
+    host.appendChild(row);
   } else {
     [...host.children].forEach((label, i) => {
       label.querySelector('.t').textContent = t(PLAN_OPTIONS[i].key);
@@ -2913,6 +2943,70 @@ function renderChat() {
 }
 
 /*
+ * Opens one HTTP exchange under its own row: the headers it carried, and the body.
+ *
+ * Under the row rather than in a dialog because the question is nearly always comparative
+ * — which of these requests carried the machine name, which POST is the one with the
+ * payload — and a dialog makes you close it before you can look at the next one.
+ *
+ * The body is fetched from the session when the workbench is live and read from the
+ * preview that travelled with the report when it is not, the same way a conversation's
+ * body works.
+ */
+function toggleExchange(tr, r) {
+  const open = tr.nextElementSibling && tr.nextElementSibling.classList.contains('exchange-detail');
+  if (open) { tr.nextElementSibling.remove(); return; }
+
+  const row = document.createElement('tr');
+  row.className = 'exchange-detail';
+
+  const cell = document.createElement('td');
+  cell.colSpan = 6;
+
+  if (r.headers && r.headers.length) {
+    const table = el('table', 'kvtable');
+    r.headers.forEach(h => {
+      const line = document.createElement('tr');
+      line.appendChild(cell_(h.name, 'mono nowrap'));
+      line.appendChild(cell_(h.value, 'mono wrap-any'));
+      table.appendChild(line);
+    });
+    cell.appendChild(table);
+  }
+
+  if (r.bodyBytes) {
+    const b = el('button', 'btn btn-ghost btn-small',
+      t('network.body') + ' · ' + formatBytes(r.bodyBytes));
+    b.type = 'button';
+    b.onclick = e => {
+      e.stopPropagation();
+      if (bridge.live && r.bodyHash) bridge.send('readBody', { hash: r.bodyHash });
+      else showBody(r.bodyPreview, r.bodyBytes, !!r.bodyPreview);
+    };
+    if (!bridge.live && !r.bodyPreview) {
+      b.disabled = true;
+      b.title = t('network.body_not_exported');
+    }
+    const actions = el('div', 'row tight');
+    actions.style.marginTop = '8px';
+    actions.appendChild(b);
+    cell.appendChild(actions);
+  } else {
+    cell.appendChild(el('div', 'hint', t('network.no_body')));
+  }
+
+  row.appendChild(cell);
+  tr.parentNode.insertBefore(row, tr.nextSibling);
+}
+
+function cell_(text, cls) {
+  const td = document.createElement('td');
+  if (cls) td.className = cls;
+  td.textContent = text == null ? '' : String(text);
+  return td;
+}
+
+/*
  * A command the operator can run, shown as something to run.
  *
  * Deliberately not folded into the sentence above it. A command is the one thing in a chat
@@ -3290,6 +3384,7 @@ function wire() {
   document.getElementById('btnBuildPlan').onclick = () => {
     const options = {};
     PLAN_OPTIONS.forEach(o => { options[o.id] = document.getElementById('plan_' + o.id).checked; });
+    options.sweep = (document.getElementById('plan_sweep') || {}).value || 'none';
     bridge.send('buildPlan', options);
   };
 

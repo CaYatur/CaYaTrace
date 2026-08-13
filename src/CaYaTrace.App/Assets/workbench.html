@@ -468,6 +468,13 @@ const state = {
 
   chat: { busy: false, turns: [] },
   remediation: null,
+
+  /* Per-row outcome of the run in progress, keyed by plan row. A removal used to report
+     a single line saying where it had got to, and everything else at the end; the one
+     moment an operator most needs to see what is happening is while it is happening. */
+  runStatus: {},
+  runOrder: [],
+
   quarantine: null,
   agent: { state: 'idle', message: '', connected: false },
   fleetView: 'host',
@@ -486,6 +493,8 @@ const state = {
   ai: { status: null, models: [], assessments: [], report: null, busy: false, progress: null },
   compare: { inputs: [], result: null },
   plan: null,
+  planOptions: { includeModified: false, includeTemp: false, includeOutOfScope: false, sweep: 'none' },
+  planBuilding: false,
   fleet: null,
 };
 
@@ -1784,53 +1793,74 @@ const PLAN_OPTIONS = [
   { id: 'includeOutOfScope', key: 'remediate.opt.out_of_scope', def: false },
 ];
 
+const SWEEP_OPTIONS = ['none', 'safe', 'moderate', 'advanced'];
+
+function defaultPlanOptions() {
+  const options = { sweep: 'none' };
+  PLAN_OPTIONS.forEach(opt => { options[opt.id] = opt.def; });
+  return options;
+}
+
+function rememberPlanOptions() {
+  const options = Object.assign(defaultPlanOptions(), state.planOptions || {});
+
+  PLAN_OPTIONS.forEach(opt => {
+    const input = document.getElementById('plan_' + opt.id);
+    if (input) options[opt.id] = !!input.checked;
+  });
+
+  const sweep = document.getElementById('plan_sweep');
+  if (sweep && SWEEP_OPTIONS.includes(sweep.value)) options.sweep = sweep.value;
+
+  state.planOptions = options;
+  return options;
+}
+
 function renderPlanOptions() {
   const host = document.getElementById('planOptions');
   if (!host) return;
 
-  if (!host.childElementCount) {
-    PLAN_OPTIONS.forEach(opt => {
-      const label = el('label', 'toggle');
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.id = 'plan_' + opt.id;
-      input.checked = opt.def;
-      label.appendChild(input);
+  const options = rememberPlanOptions();
+  host.innerHTML = '';
 
-      const body = el('div');
-      body.appendChild(el('div', 't', t(opt.key)));
-      if (opt.hint) body.appendChild(el('div', 'd', t(opt.hint)));
-      label.appendChild(body);
-      host.appendChild(label);
-    });
+  PLAN_OPTIONS.forEach(opt => {
+    const label = el('label', 'toggle');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.id = 'plan_' + opt.id;
+    input.checked = !!options[opt.id];
+    input.onchange = () => { state.planOptions[opt.id] = input.checked; };
+    label.appendChild(input);
 
-    // The sweep is a select rather than a checkbox because it is not on or off: each
-    // depth looks in more places and matches more loosely, and an operator choosing how
-    // hard to look is choosing how much they will have to uncheck afterwards.
-    const row = el('div');
-    row.style.marginTop = '10px';
-    row.appendChild(el('div', 't', t('remediate.sweep')));
-    row.appendChild(el('div', 'd', t('remediate.sweep_hint')));
+    const body = el('div');
+    body.appendChild(el('div', 't', t(opt.key)));
+    if (opt.hint) body.appendChild(el('div', 'd', t(opt.hint)));
+    label.appendChild(body);
+    host.appendChild(label);
+  });
 
-    const select = document.createElement('select');
-    select.id = 'plan_sweep';
-    select.style.marginTop = '6px';
-    select.style.maxWidth = '320px';
-    ['none', 'safe', 'moderate', 'advanced'].forEach(v => {
-      const o = document.createElement('option');
-      o.value = v;
-      o.textContent = t('remediate.sweep_' + v);
-      select.appendChild(o);
-    });
-    row.appendChild(select);
-    host.appendChild(row);
-  } else {
-    [...host.children].forEach((label, i) => {
-      label.querySelector('.t').textContent = t(PLAN_OPTIONS[i].key);
-      const d = label.querySelector('.d');
-      if (d && PLAN_OPTIONS[i].hint) d.textContent = t(PLAN_OPTIONS[i].hint);
-    });
-  }
+  // The sweep is a select rather than a checkbox because it is not on or off: each
+  // depth looks in more places and matches more loosely, and an operator choosing how
+  // hard to look is choosing how much they will have to uncheck afterwards.
+  const row = el('label', 'plan-sweep');
+  row.style.marginTop = '10px';
+  row.appendChild(el('div', 't', t('remediate.sweep')));
+  row.appendChild(el('div', 'd', t('remediate.sweep_hint')));
+
+  const select = document.createElement('select');
+  select.id = 'plan_sweep';
+  select.style.marginTop = '6px';
+  select.style.maxWidth = '320px';
+  SWEEP_OPTIONS.forEach(v => {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = t('remediate.sweep_' + v);
+    select.appendChild(o);
+  });
+  select.value = SWEEP_OPTIONS.includes(options.sweep) ? options.sweep : 'none';
+  select.onchange = () => { state.planOptions.sweep = select.value; };
+  row.appendChild(select);
+  host.appendChild(row);
 
   // Building a plan reads a recording; opening a package does not. With no session the
   // build button is inert and the package path stays available, which is the case a
@@ -1844,7 +1874,13 @@ function renderPlanOptions() {
   // built. Disabling them bought no safety and was the whole of the complaint.
   const hasSession = !!state.session;
   const build = document.getElementById('btnBuildPlan');
-  if (build) build.disabled = !hasSession;
+  if (build) {
+    build.disabled = !hasSession || state.planBuilding;
+    build.textContent = state.planBuilding ? t('remediate.building') : t('remediate.build');
+  }
+
+  const loadPackage = document.getElementById('btnLoadPackage');
+  if (loadPackage) loadPackage.disabled = !!state.planBuilding;
 
   const note = document.getElementById('planNoSession');
   if (note) note.hidden = hasSession;
@@ -1856,7 +1892,22 @@ function renderPlan() {
   host.innerHTML = '';
 
   const plan = state.plan;
+  if (state.planBuilding) {
+    const card = el('div', 'card');
+    card.appendChild(el('h3', null, t('remediate.building')));
+    const bar = el('div', 'progress indeterminate');
+    bar.appendChild(el('div'));
+    card.appendChild(bar);
+    host.appendChild(card);
+    return;
+  }
+
   if (!plan) return;
+
+  if (plan.error) {
+    host.appendChild(emptyState(plan.error));
+    return;
+  }
 
   if (!plan.items || !plan.items.length) {
     host.appendChild(emptyState(t('remediate.empty')));
@@ -1864,20 +1915,24 @@ function renderPlan() {
   }
 
   const byKind = {};
-  plan.items.forEach(i => { (byKind[i.kind] = byKind[i.kind] || []).push(i); });
+  plan.items.forEach(i => {
+    const kind = i.kind || 'File';
+    (byKind[kind] = byKind[kind] || []).push(i);
+  });
 
   Object.keys(byKind).sort().forEach(kind => {
     const card = el('div', 'card wide');
     const key = 'remediate.kind.' + kind.toLowerCase();
     card.appendChild(el('h3', null, `${t(key)} · ${formatNumber(byKind[kind].length)}`));
 
-    card.appendChild(table(
+    const planTable = table(
       ['', t('remediate.col_item'), t('remediate.col_evidence')],
       byKind[kind],
       item => {
         const tr = document.createElement('tr');
 
         const pick = document.createElement('td');
+        pick.className = 'plan-check';
         const box = document.createElement('input');
         box.type = 'checkbox';
         box.checked = !item.protected;
@@ -1888,20 +1943,27 @@ function renderPlan() {
         pick.appendChild(box);
         tr.appendChild(pick);
 
-        tr.appendChild(cell(item.target, 'mono wide'));
-        tr.appendChild(cell(item.protected ? t('remediate.protected') : (item.reason || ''), null));
+        tr.appendChild(cell(item.target, 'mono plan-target'));
+        tr.appendChild(cell(item.protected
+          ? (item.protectionReason || t('remediate.protected'))
+          : (item.reason || ''), 'plan-reason'));
         return tr;
-      }));
+      });
+    planTable.className += ' plan-table';
+    card.appendChild(planTable);
     host.appendChild(card);
   });
 
   const actions = el('div', 'row tight wrap');
   actions.style.marginTop = '4px';
 
-  const exportBtn = el('button', 'btn btn-primary', t('remediate.export'));
-  exportBtn.type = 'button';
-  exportBtn.onclick = () => bridge.send('exportPackage', { ids: selectedPlanIds() });
-  actions.appendChild(exportBtn);
+  const canExport = plan.canExport !== false;
+  if (canExport) {
+    const exportBtn = el('button', 'btn btn-primary', t('remediate.export'));
+    exportBtn.type = 'button';
+    exportBtn.onclick = () => bridge.send('exportPackage', { ids: selectedPlanIds() });
+    actions.appendChild(exportBtn);
+  }
 
   const applyBtn = el('button', 'btn btn-danger', t('remediate.apply'));
   applyBtn.type = 'button';
@@ -1909,7 +1971,7 @@ function renderPlan() {
   actions.appendChild(applyBtn);
 
   host.appendChild(actions);
-  host.appendChild(el('div', 'hint', t('remediate.export_hint')));
+  if (canExport) host.appendChild(el('div', 'hint', t('remediate.export_hint')));
 }
 
 function selectedPlanIds() {
@@ -1929,9 +1991,46 @@ function confirmApply() {
     actions: [
       { label: t('common.cancel') },
       { label: t('remediate.apply'), className: 'btn-danger',
-        onClick: () => bridge.send('applyPlan', { ids }) },
+        onClick: () => startRun(ids, 'standard') },
     ],
   });
+}
+
+/*
+ * The second pass, over what the first could not finish.
+ *
+ * Its own confirmation, and a different one, because it does different things: it stops
+ * whatever is holding a file, takes ownership of it, and hands anything still immovable to
+ * Windows to deal with at the next restart. Every one of those changes something the
+ * operator did not ask to change, so the first pass never does any of it — it reports what
+ * is in the way, and this is where they decide.
+ */
+function confirmRetry() {
+  const r = state.remediation;
+  if (!r || !r.items) return;
+
+  const ids = r.items.filter(i => i.retryable && i.id != null).map(i => i.id);
+  if (!ids.length) return;
+
+  showModal({
+    title: t('remediate.retry_confirm_title', formatNumber(ids.length)),
+    body: t('remediate.retry_confirm_body'),
+    actions: [
+      { label: t('common.cancel') },
+      { label: t('remediate.retry'), className: 'btn-danger',
+        onClick: () => startRun(ids, 'insistent') },
+    ],
+  });
+}
+
+/* One run, and the live board it writes into. */
+function startRun(ids, force) {
+  state.runStatus = {};
+  state.runOrder = ids.slice();
+  state.remediation = { running: true, total: ids.length, index: 0, percent: 0, force };
+  renderRemediation();
+
+  bridge.send('applyPlan', { ids, force });
 }
 
 /* ================================================================ fleet */
@@ -2532,7 +2631,11 @@ function load(data) {
   // A new session is a new conversation. Carrying answers about the previous one into
   // this view would be the most confusing possible kind of stale data.
   state.chat = { busy: false, turns: [] };
+  state.plan = null;
+  state.planBuilding = false;
   state.remediation = null;
+  state.runStatus = {};
+  state.runOrder = [];
   state.quarantine = null;
 
   state.expanded = new Set();
@@ -3153,6 +3256,47 @@ function askChat(question) {
  * fails partway through, "it failed after moving these eleven files" is a recoverable
  * situation and "it failed" is a guess.
  */
+/*
+ * Every item in the run, with what happened to it, updated as it happens.
+ *
+ * The list is in the order the operator approved rather than the order the runner works
+ * in — services stop before their binaries and folders go after their contents, which is
+ * correct and is not the order anybody is reading in. Rows that have not been reached yet
+ * are shown waiting, so the length of the list is the size of the job rather than a
+ * number that grows.
+ */
+function runBoard() {
+  const order = state.runOrder || [];
+  if (!order.length) return el('div');
+
+  const plan = (state.plan && state.plan.items) || [];
+  const byId = {};
+  plan.forEach(i => { byId[i.id] = i; });
+
+  const table = el('table', 'kvtable run-board');
+
+  order.forEach(id => {
+    const status = state.runStatus[id];
+    const item = byId[id];
+
+    const outcome = (status && status.outcome) || 'Waiting';
+    const row = el('tr', 'run-row run-' + outcome.toLowerCase());
+
+    row.appendChild(el('td', 'kvname', t('outcome.' + outcome.toLowerCase(), outcome)));
+
+    const cell = el('td', 'kvdata');
+    cell.appendChild(el('code', 'wrap-any',
+      (status && status.target) || (item && item.target) || id));
+
+    if (status && status.detail) cell.appendChild(el('div', 'kvwas', status.detail));
+    row.appendChild(cell);
+
+    table.appendChild(row);
+  });
+
+  return wrapScroll(table);
+}
+
 function renderRemediation() {
   const host = document.getElementById('remediationProgress');
   if (!host) return;
@@ -3178,6 +3322,8 @@ function renderRemediation() {
         : `${r.index || 0} / ${r.total || 0} · ${r.target || ''}`));
 
     if (r.detail) card.appendChild(el('div', 'hint', r.detail));
+
+    card.appendChild(runBoard());
     host.appendChild(card);
     return;
   }
@@ -3187,6 +3333,22 @@ function renderRemediation() {
   card.appendChild(el('h3', null, t('remediate.result')));
   card.appendChild(el('div', 'summary-row',
     `${t('remediate.removed')} ${r.removed} · ${t('remediate.skipped')} ${r.skipped} · ${t('remediate.failed')} ${r.failed}`));
+
+  card.appendChild(runBoard());
+
+  /* Something is still in the way, and there is more that can be done about it. */
+  if (r.retryable > 0) {
+    const box = el('div', 'retry-box');
+    box.appendChild(el('div', 'retry-what', t('remediate.retry_available', formatNumber(r.retryable))));
+    box.appendChild(el('div', 'hint', t('remediate.retry_hint')));
+
+    const button = el('button', 'btn btn-danger', t('remediate.retry'));
+    button.type = 'button';
+    button.onclick = () => confirmRetry();
+    box.appendChild(button);
+
+    card.appendChild(box);
+  }
 
   if ((r.defences || []).length) {
     const box = el('div', 'defence-box');
@@ -3207,13 +3369,16 @@ function renderRemediation() {
     card.appendChild(box);
   }
 
-  if ((r.items || []).length) {
+  /* Anything the run dealt with that was not on the approved list — a package applied
+     without a plan on screen, for instance — still has to be reported somewhere. */
+  const unlisted = (r.items || []).filter(i => i.id == null);
+  if (unlisted.length) {
     const details = el('details');
-    details.appendChild(el('summary', null, t('remediate.item_log') + ' (' + r.items.length + ')'));
+    details.appendChild(el('summary', null, t('remediate.item_log') + ' (' + unlisted.length + ')'));
     const table = el('table', 'kvtable');
-    r.items.forEach(i => {
+    unlisted.forEach(i => {
       const row = el('tr');
-      row.appendChild(el('td', 'kvname', i.outcome));
+      row.appendChild(el('td', 'kvname', t('outcome.' + String(i.outcome).toLowerCase())));
       const cell = el('td', 'kvdata');
       cell.appendChild(el('code', 'wrap-any', i.target + (i.value ? '::' + i.value : '')));
       if (i.detail) cell.appendChild(el('div', 'kvwas', i.detail));
@@ -3394,13 +3559,30 @@ function wire() {
   };
 
   document.getElementById('btnBuildPlan').onclick = () => {
-    const options = {};
-    PLAN_OPTIONS.forEach(o => { options[o.id] = document.getElementById('plan_' + o.id).checked; });
-    options.sweep = (document.getElementById('plan_sweep') || {}).value || 'none';
+    const options = rememberPlanOptions();
+    if (!state.session) {
+      toast(t('remediate.no_session'), 'error');
+      renderPlanOptions();
+      return;
+    }
+
+    state.plan = null;
+    state.planBuilding = true;
+    state.remediation = null;
+  state.runStatus = {};
+  state.runOrder = [];
+    state.quarantine = null;
+    renderPlanOptions();
+    renderPlan();
+    renderRemediation();
+    renderQuarantine();
     bridge.send('buildPlan', options);
   };
 
-  document.getElementById('btnLoadPackage').onclick = () => bridge.send('loadPackage', {});
+  document.getElementById('btnLoadPackage').onclick = () => {
+    state.planBuilding = false;
+    bridge.send('loadPackage', {});
+  };
 
   const chatInput = document.getElementById('chatInput');
   document.getElementById('btnChatSend').onclick = () => {
@@ -3496,7 +3678,18 @@ function wireBridge() {
   });
 
   bridge.on('compare', payload => { state.compare.result = payload; renderCompare(); });
-  bridge.on('plan', payload => { state.plan = payload; renderPlan(); });
+  bridge.on('plan', payload => {
+    state.planBuilding = false;
+    state.plan = payload;
+    state.remediation = null;
+  state.runStatus = {};
+  state.runOrder = [];
+    state.quarantine = null;
+    renderPlanOptions();
+    renderPlan();
+    renderRemediation();
+    renderQuarantine();
+  });
   bridge.on('fleet', payload => { state.fleet = payload; renderFleet(); });
 
   bridge.on('body', payload =>
@@ -3545,6 +3738,31 @@ function wireBridge() {
   });
 
   bridge.on('remediation', payload => {
+    /* Progress arrives twice per item — once as it starts, once with its outcome — and
+       the board keeps the latest of the two. Without the id it is a message about
+       something, with it, it is a message about a row. */
+    if (payload.id != null) {
+      state.runStatus[payload.id] = {
+        outcome: payload.outcome || 'Working',
+        detail: payload.detail || '',
+        target: payload.target,
+        kind: payload.kind,
+      };
+    }
+
+    /* The completed run carries every result at once, which is also the only place a
+       row that never produced progress (refused before it started) shows up. */
+    if (payload.items) {
+      payload.items.forEach(i => {
+        if (i.id != null) {
+          state.runStatus[i.id] = {
+            outcome: i.outcome, detail: i.detail, target: i.target, kind: i.kind,
+            retryable: i.retryable,
+          };
+        }
+      });
+    }
+
     state.remediation = payload;
     renderRemediation();
     if (payload.held) renderQuarantine();
@@ -3559,7 +3777,14 @@ function wireBridge() {
     }
   });
 
-  bridge.on('toast', payload => toast(payload.text || '', payload.kind));
+  bridge.on('toast', payload => {
+    if (state.planBuilding && payload.kind === 'error') {
+      state.planBuilding = false;
+      renderPlanOptions();
+      renderPlan();
+    }
+    toast(payload.text || '', payload.kind);
+  });
 
   bridge.on('modal', payload => {
     // Used for the confirmations the host must own — the HTTPS interception consent

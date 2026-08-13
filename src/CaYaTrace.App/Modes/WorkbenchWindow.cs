@@ -327,6 +327,7 @@ public sealed partial class WorkbenchWindow : Form
                 return;
             }
 
+            ResetPlanState();
             PushSession();
         }
         catch (Exception ex) when (ex is IOException or Microsoft.Data.Sqlite.SqliteException)

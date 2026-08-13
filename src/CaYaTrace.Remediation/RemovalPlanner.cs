@@ -79,6 +79,17 @@ public sealed class RemovalPlanner
     /// </remarks>
     public List<ExcludedItem> Excluded { get; } = new();
 
+    /// <summary>
+    /// What the last <see cref="Build"/> decided the program itself consists of.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so the loader search probes it rejected can be inspected. The rule that
+    /// separates a component from a probe is the difference between a plan that names the
+    /// program's executable and one that offers to delete <c>cmd.exe</c>, and a rule that
+    /// important should be checkable against a real recording.
+    /// </remarks>
+    public SubjectFootprint Footprint { get; private set; } = new();
+
     public List<RemovalItem> Build(SessionInfo session)
     {
         Excluded.Clear();
@@ -209,10 +220,17 @@ public sealed class RemovalPlanner
         List<RemovalItem> plan,
         SafetyPolicy policy)
     {
-        var images = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Footprint = SubjectFootprint.Collect(_store, session, _paths, processes);
 
-        if (session.TargetPath is { Length: > 0 } target) images.Add(target);
+        var known = new HashSet<string>(
+            plan.Select(static i => $"{i.Kind}|{i.Target}"), StringComparer.OrdinalIgnoreCase);
 
+        foreach (SubjectFootprint.Component part in Footprint.Components)
+            Offer(RemovalKind.File, part.Path, part.Why, part.Evidence);
+
+        // A process image is still worth having when the process table resolved one: a
+        // program that spawned a helper out of a second directory is named there and
+        // nowhere else.
         foreach (ProcessNode node in processes.Values)
         {
             if (node.ImagePath is not { Length: > 0 } image) continue;
@@ -227,56 +245,33 @@ public sealed class RemovalPlanner
             // launches cmd.exe has not made cmd.exe its own, and being inside the
             // subject's process tree does not transfer ownership of the binary.
             if (node.IsMicrosoftSigned()) continue;
-
-            // A targeted recording answers about its own tree; a system-wide one has no
-            // tree, and there the signature above is the whole test.
-            if (session.RootProcess == ProcessKey.None || node.InScope) images.Add(image);
-        }
-
-        var known = new HashSet<string>(
-            plan.Select(static i => $"{i.Kind}|{i.Target}"), StringComparer.OrdinalIgnoreCase);
-
-        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (string image in images)
-        {
-            // Windows' own binaries are not the subject even when the subject ran them:
-            // a program that launches cmd.exe has not made cmd.exe its own.
+            if (session.RootProcess != ProcessKey.None && !node.InScope) continue;
             if (_paths.IsSystemPath(image)) continue;
 
-            Offer(RemovalKind.File, image, "the program's own executable");
-
-            string? directory = SafeDirectory(image);
-            if (directory is { Length: > 0 }) directories.Add(directory);
+            Offer(RemovalKind.File, _paths.Tokenize(image), "the program's own executable", 0);
         }
 
-        foreach (string directory in directories)
+        // The directory last, and only when the program's own file is in it.
+        //
+        // Offering it is safe because the runner refuses to move a directory that still
+        // has anything in it: everything the operator kept holds the folder open, and the
+        // folder only goes when nothing of theirs is left. That is the behaviour asked
+        // for — file by file, and the folder as well when the folder was the program's.
+        if (Footprint.Directory is { Length: > 0 } home
+            && !Footprint.DirectoryIsShared
+            && !IsWellKnownFolder(home)
+            && !_paths.IsSystemPath(home))
         {
-            if (IsWellKnownFolder(_paths.Tokenize(directory))) continue;
-            if (_paths.IsSystemPath(directory)) continue;
-
-            string[] files;
-            try { files = Directory.GetFiles(directory, "*", SearchOption.AllDirectories); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
-
-            // A directory holding more than a program reasonably ships is a shared one
-            // that the subject happened to run from — a downloads folder, a desktop. Its
-            // contents are not all the program's and must not be swept up as though they
-            // were.
-            const int PlausibleInstall = 2000;
-            if (files.Length > PlausibleInstall) continue;
-
-            foreach (string file in files) Offer(RemovalKind.File, file, "sits with the program's executable");
-
-            Offer(RemovalKind.Directory, directory, "the directory the program ran from");
+            Offer(RemovalKind.Directory, home,
+                "the directory the program ran from; removed only once everything in it has been", 0);
         }
 
-        void Offer(RemovalKind kind, string path, string why)
+        void Offer(RemovalKind kind, string token, string why, long evidence)
         {
-            string token = _paths.Tokenize(path);
             if (!known.Add($"{kind}|{token}")) return;
 
             var item = new RemovalItem { Kind = kind, Target = token, Rationale = why };
+            if (evidence > 0) item.Evidence.Add(evidence);
 
             SafetyDecision decision = policy.Evaluate(item);
             if (decision.Verdict == SafetyVerdict.Forbidden)
@@ -287,12 +282,6 @@ public sealed class RemovalPlanner
 
             plan.Add(item);
         }
-    }
-
-    private static string? SafeDirectory(string path)
-    {
-        try { return Path.GetDirectoryName(path); }
-        catch (ArgumentException) { return null; }
     }
 
     /// <summary>
@@ -397,7 +386,7 @@ public sealed class RemovalPlanner
     /// drops the machine dependence.
     /// </para>
     /// </remarks>
-    private static readonly string[] WellKnownFolderTokens =
+    internal static readonly string[] WellKnownFolderTokens =
     {
         "%USERPROFILE%", "%APPDATA%", "%LOCALAPPDATA%", "%PROGRAMDATA%",
         "%PROGRAMFILES%", "%PROGRAMFILES(X86)%", "%WINDIR%", "%SYSTEM32%", "%SYSWOW64%",
@@ -438,7 +427,7 @@ public sealed class RemovalPlanner
     /// installing itself creates, and excluding a whole subtree would leave the program's
     /// own directory behind — which is the opposite failure and just as bad.
     /// </remarks>
-    private static bool IsWellKnownFolder(string tokenized)
+    internal static bool IsWellKnownFolder(string tokenized)
     {
         if (string.IsNullOrWhiteSpace(tokenized)) return false;
 

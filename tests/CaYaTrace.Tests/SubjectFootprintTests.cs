@@ -35,65 +35,235 @@ public sealed class SubjectFootprintTests : IDisposable
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
-    private SessionStore Store(out string directory)
+    private SessionStore Store()
     {
-        directory = Path.Combine(_root, "session");
+        string directory = Path.Combine(_root, "session");
         Directory.CreateDirectory(directory);
         return SessionStore.Create(Path.Combine(directory, "session.ctdb"));
     }
 
+    private static readonly ProcessKey Subject =
+        ProcessKey.TryParse("k:ffff000011112222:4772", out ProcessKey parsed) ? parsed : ProcessKey.None;
+
+    private static Observation Event(long seq, EventCategory category, EventAction action, string target) => new()
+    {
+        Seq = seq,
+        Actor = Subject,
+        Timestamp = DateTimeOffset.UtcNow,
+        Category = category,
+        Action = action,
+        Target = target,
+        Source = EvidenceSource.KernelEtw,
+        Status = EventStatus.Success,
+    };
+
     /// <summary>
-    /// The subject's own directory is listed file by file.
+    /// The program's parts come out of the recording, not off the disk.
     /// </summary>
     /// <remarks>
-    /// File by file because a folder is a container: the operator asked for each file to be
-    /// removed individually, and for the folder itself only when nothing in it is theirs.
+    /// <para>
+    /// Reproduces what a real recording contained. Its subject was a batch file that ran an
+    /// executable which loaded one library beside it and read one data file; the loader,
+    /// resolving imports, also <em>opened</em> a dozen paths inside that directory for DLLs
+    /// that live in System32 — the application directory comes first in the search order, so
+    /// every one of them produces an open for a file that does not exist.
+    /// </para>
+    /// <para>
+    /// A plan built from opened paths therefore lists twelve Windows DLL names inside the
+    /// program's folder, one of which is <c>cmd.exe</c>. A plan built from used paths lists
+    /// the four files that were really there. The difference is a read: the loader's probes
+    /// have opens and nothing else, and every real file has a load, a read or a write.
+    /// </para>
+    /// <para>
+    /// Nothing in this test exists on disk, which is the point — the recording alone has to
+    /// carry it, because by the time an operator builds the plan an antivirus may already
+    /// have taken the files away. That is what happened on the session this is drawn from.
+    /// </para>
     /// </remarks>
     [Fact]
-    public void TheProgramsOwnFilesAreListedIndividually()
+    public void ComponentsComeFromWhatTheRecordingSawUsed()
     {
-        string install = Path.Combine(_root, "codex-pets-2.3");
-        Directory.CreateDirectory(install);
+        using SessionStore store = Store();
 
-        string launcher = Path.Combine(install, "Application.bat");
-        File.WriteAllText(launcher, "@echo off");
-        File.WriteAllText(Path.Combine(install, "util64.exe"), "MZ");
-        File.WriteAllText(Path.Combine(install, "readme.txt"), "hello");
-
-        Directory.CreateDirectory(Path.Combine(install, "data"));
-        File.WriteAllText(Path.Combine(install, "data", "payload.bin"), "xx");
-
-        using SessionStore store = Store(out _);
-        var session = new SessionInfo { SessionId = "t", Name = "Application.bat", TargetPath = launcher };
+        var session = new SessionInfo
+        {
+            SessionId = "t",
+            Name = "Application.bat",
+            RootProcess = Subject,
+            TargetPath = @"C:\Users\Analyst\Downloads\widget-2.3\Application.bat",
+        };
         store.SaveSessionInfo(session);
 
-        List<RemovalItem> plan = new RemovalPlanner(store).Build(session);
-
-        foreach (RemovalItem item in plan)
-            _out.WriteLine($"{item.Kind,-10} {item.Target}   [{item.Rationale}]");
-
-        // Every file beside the executable, each on its own.
-        foreach (string expected in new[] { "Application.bat", "util64.exe", "readme.txt", "payload.bin" })
+        store.UpsertProcesses(new[]
         {
-            Assert.Contains(plan, i => i.Kind == RemovalKind.File
-                                       && i.Target.EndsWith(expected, StringComparison.OrdinalIgnoreCase));
+            new ProcessNode { Key = Subject, ImagePath = "helper64.exe", InScope = true },
+        });
+
+        const string home = @"%USERPROFILE%\Downloads\widget-2.3";
+        long seq = 1;
+        var batch = new List<Observation>
+        {
+            // Used: loaded, read, written.
+            Event(seq++, EventCategory.Module, EventAction.ImageLoad, $@"{home}\helper64.exe"),
+            Event(seq++, EventCategory.Module, EventAction.ImageLoad, $@"{home}\runtime.dll"),
+            Event(seq++, EventCategory.File, EventAction.FileRead, $@"{home}\config.txt"),
+            Event(seq++, EventCategory.File, EventAction.FileRead, $@"{home}\Application.bat"),
+
+            // Windows' own, loaded from where Windows keeps them.
+            Event(seq++, EventCategory.Module, EventAction.ImageLoad, @"%SYSTEM32%\ntdll.dll"),
+            Event(seq++, EventCategory.Module, EventAction.ImageLoad, @"%SYSTEM32%\cmd.exe"),
+
+            // An alternate data stream is metadata on a file, not a file.
+            Event(seq++, EventCategory.File, EventAction.FileRead, $@"{home}\helper64.exe:Zone.Identifier"),
+
+            // The directory itself, which the collector reports both ways.
+            Event(seq++, EventCategory.File, EventAction.FileOpen, home),
+            Event(seq++, EventCategory.File, EventAction.FileOpen, home + "\\"),
+        };
+
+        // The loader's search probes: opened, never there.
+        foreach (string probe in new[]
+                 {
+                     "cmd.exe", "bcrypt.dll", "ncrypt.dll", "wininet.dll", "CRYPTBASE.DLL",
+                     "DPAPI.DLL", "MSASN1.dll", "NTASN1.dll", "netutils.dll", "profapi.dll",
+                     "srvcli.dll", "winbrand.dll", "helper64.exe.Config",
+                 })
+        {
+            batch.Add(Event(seq++, EventCategory.File, EventAction.FileOpen, $@"{home}\{probe}"));
         }
 
-        // And the folder, because everything in it belongs to the program.
+        store.ImportObservations(batch);
+
+        var planner = new RemovalPlanner(store);
+        List<RemovalItem> plan = planner.Build(session);
+
+        foreach (RemovalItem item in plan) _out.WriteLine($"{item.Kind,-10} {item.Target}   [{item.Rationale}]");
+        _out.WriteLine($"probes rejected: {planner.Footprint.SearchProbes.Count}");
+
+        foreach (string kept in new[] { "helper64.exe", "runtime.dll", "config.txt", "Application.bat" })
+        {
+            Assert.Contains(plan, i => i.Kind == RemovalKind.File
+                                       && i.Target.Equals($@"{home}\{kept}", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Not one probe, and above all not this one: a bare Windows binary name wearing a
+        // path under the operator's profile passes every check written to recognise a
+        // system location.
+        Assert.DoesNotContain(plan, i => i.Target.EndsWith(@"\cmd.exe", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(plan, i => i.Target.EndsWith(".Config", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(plan, i => i.Target.EndsWith("ntdll.dll", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(plan, i => i.Target.Contains("Zone.Identifier", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal(13, planner.Footprint.SearchProbes.Count);
+
+        // The program's own folder, and no other.
         Assert.Contains(plan, i => i.Kind == RemovalKind.Directory
-                                   && i.Target.EndsWith("codex-pets-2.3", StringComparison.OrdinalIgnoreCase));
+                                   && i.Target.Equals(home, StringComparison.OrdinalIgnoreCase));
+        Assert.Single(plan, i => i.Kind == RemovalKind.Directory);
     }
 
     /// <summary>
-    /// A program run from a shared folder does not take the folder with it.
+    /// A session read on a machine other than the one that recorded it gives the same answer.
     /// </summary>
     /// <remarks>
-    /// The case that makes the previous one safe. Somebody who runs a sample straight out
-    /// of Downloads must not be offered Downloads — and the difference cannot be the name,
-    /// because a folder is shared by what is in it, not by what it is called.
+    /// The failure this replaces: the footprint was tokenized against the reading machine,
+    /// so a session recorded under one profile produced <c>%USERSROOT%\PC\Downloads\…</c>
+    /// while every observation in it said <c>%USERPROFILE%\Downloads\…</c>. The two never
+    /// met, and the program's own files were absent from the plan to remove it.
     /// </remarks>
     [Fact]
-    public void AProgramRunFromASharedFolderDoesNotTakeTheFolder()
+    public void AForeignProfileDoesNotBreakTheMatch()
+    {
+        using SessionStore store = Store();
+
+        var session = new SessionInfo
+        {
+            SessionId = "t",
+            Name = "setup.exe",
+            RootProcess = Subject,
+
+            // A profile that does not exist on the machine reading this.
+            TargetPath = @"C:\Users\SomebodyElse\Downloads\widget-1.0\setup.exe",
+        };
+        store.SaveSessionInfo(session);
+
+        store.UpsertProcesses(new[]
+        {
+            new ProcessNode { Key = Subject, ImagePath = "setup.exe", InScope = true },
+        });
+
+        const string home = @"%USERPROFILE%\Downloads\widget-1.0";
+        store.ImportObservations(new List<Observation>
+        {
+            Event(1, EventCategory.Module, EventAction.ImageLoad, $@"{home}\setup.exe"),
+            Event(2, EventCategory.File, EventAction.FileRead, $@"{home}\payload.dat"),
+        });
+
+        List<RemovalItem> plan = new RemovalPlanner(store).Build(session);
+        foreach (RemovalItem item in plan) _out.WriteLine($"{item.Kind,-10} {item.Target}");
+
+        Assert.Contains(plan, i => i.Target.Equals($@"{home}\setup.exe", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(plan, i => i.Target.Equals($@"{home}\payload.dat", StringComparison.OrdinalIgnoreCase));
+
+        // The reading machine's own profile is never spoken of.
+        Assert.DoesNotContain(plan, i => i.Target.Contains("%USERSROOT%", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// A module loaded from somewhere else is still the program's.
+    /// </summary>
+    /// <remarks>
+    /// The case the directory sweep cannot reach. A library side-loaded out of the profile
+    /// is neither beside the executable nor created while anything watched, and the only
+    /// statement the recording makes about it is that the program loaded it — which is the
+    /// strongest statement there is that a program needs a file.
+    /// </remarks>
+    [Fact]
+    public void ASideLoadedLibraryIsACandidateWhereverItSits()
+    {
+        using SessionStore store = Store();
+
+        var session = new SessionInfo
+        {
+            SessionId = "t", Name = "setup.exe", RootProcess = Subject,
+            TargetPath = @"C:\Users\Analyst\Downloads\widget\setup.exe",
+        };
+        store.SaveSessionInfo(session);
+        store.UpsertProcesses(new[]
+        {
+            new ProcessNode { Key = Subject, ImagePath = "setup.exe", InScope = true },
+        });
+
+        store.ImportObservations(new List<Observation>
+        {
+            Event(1, EventCategory.Module, EventAction.ImageLoad, @"%LOCALAPPDATA%\a8f3c1\helper.dll"),
+            Event(2, EventCategory.Module, EventAction.ImageLoad, @"%SYSTEM32%\kernel32.dll"),
+        });
+
+        List<RemovalItem> plan = new RemovalPlanner(store).Build(session);
+
+        Assert.Contains(plan, i => i.Target.Equals(
+            @"%LOCALAPPDATA%\a8f3c1\helper.dll", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(plan, i => i.Target.Contains("kernel32", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// A program run out of somebody else's folder takes nothing but itself.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Somebody who runs a sample straight out of a downloads folder must not lose the
+    /// folder, and must not be offered their own photographs to delete either. Both used
+    /// to happen: the folder was read at plan time and everything in it was listed and
+    /// ticked, which then emptied the folder and let the folder itself go too.
+    /// </para>
+    /// <para>
+    /// What decides it is how much of the folder the program accounts for. Here it is one
+    /// file in six, so the folder is somebody else's and only the one file is listed.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void AProgramRunFromSomebodyElsesFolderTakesNothingElse()
     {
         string downloads = Path.Combine(_root, "Downloads");
         Directory.CreateDirectory(downloads);
@@ -101,28 +271,89 @@ public sealed class SubjectFootprintTests : IDisposable
         string launcher = Path.Combine(downloads, "sample.exe");
         File.WriteAllText(launcher, "MZ");
 
-        // Somebody else's files, in the same folder.
         for (int i = 0; i < 5; i++)
             File.WriteAllText(Path.Combine(downloads, $"holiday-{i}.jpg"), "jpeg");
 
-        using SessionStore store = Store(out _);
-        var session = new SessionInfo { SessionId = "t", Name = "sample.exe", TargetPath = launcher };
+        using SessionStore store = Store();
+        var session = new SessionInfo
+        {
+            SessionId = "t", Name = "sample.exe", RootProcess = Subject, TargetPath = launcher,
+        };
         store.SaveSessionInfo(session);
+        store.UpsertProcesses(new[]
+        {
+            new ProcessNode { Key = Subject, ImagePath = "sample.exe", InScope = true },
+        });
 
-        List<RemovalItem> plan = new RemovalPlanner(store).Build(session);
+        // The recording names the one file, the way a real one would.
+        store.ImportObservations(new List<Observation>
+        {
+            Event(1, EventCategory.Module, EventAction.ImageLoad, launcher),
+        });
 
-        foreach (RemovalItem item in plan)
-            _out.WriteLine($"{item.Kind,-10} {item.Target}");
+        var planner = new RemovalPlanner(store);
+        List<RemovalItem> plan = planner.Build(session);
+        foreach (RemovalItem item in plan) _out.WriteLine($"{item.Kind,-10} {item.Target}");
 
         Assert.Contains(plan, i => i.Kind == RemovalKind.File
                                    && i.Target.EndsWith("sample.exe", StringComparison.OrdinalIgnoreCase));
 
-        // The operator's photographs are listed, which is the honest outcome — the tool
-        // cannot know they are not the program's — but they arrive as individual files the
-        // operator can uncheck, never as a folder that takes them all at once.
-        Assert.DoesNotContain(plan, i => i.Kind == RemovalKind.Directory
-                                         && i.Target.EndsWith("Downloads", StringComparison.OrdinalIgnoreCase)
-                                         && !i.Target.Contains("cayatrace-foot", StringComparison.OrdinalIgnoreCase));
+        // Not one of the operator's files, and not the folder that holds them.
+        Assert.DoesNotContain(plan, i => i.Target.Contains("holiday-", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(plan, i => i.Kind == RemovalKind.Directory);
+        Assert.True(planner.Footprint.DirectoryIsShared);
+    }
+
+    /// <summary>
+    /// A folder that is mostly the program's is the program's, including what it never touched.
+    /// </summary>
+    /// <remarks>
+    /// The other side of the same rule, and the reason it is a proportion rather than a
+    /// refusal. A licence file or an unused plugin is never opened, so no recording can
+    /// name it — and leaving it behind is the residue an uninstaller exists to prevent.
+    /// </remarks>
+    [Fact]
+    public void AFolderThatIsMostlyTheProgramsIsTakenWhole()
+    {
+        string install = Path.Combine(_root, "widget-2.3");
+        Directory.CreateDirectory(install);
+
+        string launcher = Path.Combine(install, "widget.exe");
+        File.WriteAllText(launcher, "MZ");
+        File.WriteAllText(Path.Combine(install, "runtime.dll"), "MZ");
+        File.WriteAllText(Path.Combine(install, "LICENCE.txt"), "never opened");
+
+        using SessionStore store = Store();
+        var session = new SessionInfo
+        {
+            SessionId = "t", Name = "widget.exe", RootProcess = Subject, TargetPath = launcher,
+        };
+        store.SaveSessionInfo(session);
+        store.UpsertProcesses(new[]
+        {
+            new ProcessNode { Key = Subject, ImagePath = "widget.exe", InScope = true },
+        });
+
+        store.ImportObservations(new List<Observation>
+        {
+            Event(1, EventCategory.Module, EventAction.ImageLoad, launcher),
+            Event(2, EventCategory.Module, EventAction.ImageLoad, Path.Combine(install, "runtime.dll")),
+        });
+
+        var planner = new RemovalPlanner(store);
+        List<RemovalItem> plan = planner.Build(session);
+        foreach (RemovalItem item in plan) _out.WriteLine($"{item.Kind,-10} {item.Target}   [{item.Rationale}]");
+
+        Assert.False(planner.Footprint.DirectoryIsShared);
+
+        foreach (string expected in new[] { "widget.exe", "runtime.dll", "LICENCE.txt" })
+        {
+            Assert.Contains(plan, i => i.Kind == RemovalKind.File
+                                       && i.Target.EndsWith(expected, StringComparison.OrdinalIgnoreCase));
+        }
+
+        Assert.Contains(plan, i => i.Kind == RemovalKind.Directory
+                                   && i.Target.EndsWith("widget-2.3", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>Windows' own binaries are never the subject's, whatever ran them.</summary>
@@ -134,7 +365,7 @@ public sealed class SubjectFootprintTests : IDisposable
     [Fact]
     public void WindowsOwnBinariesAreNeverCandidates()
     {
-        using SessionStore store = Store(out _);
+        using SessionStore store = Store();
 
         string system = Environment.GetFolderPath(Environment.SpecialFolder.System);
         var session = new SessionInfo

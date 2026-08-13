@@ -17,6 +17,17 @@ public enum ItemOutcome
     SkippedFingerprintMismatch = 4,
     SkippedByOperator = 5,
     Failed = 6,
+
+    /// <summary>
+    /// Handed to the session manager, which will move it before anything else starts.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from both <see cref="Removed"/> and <see cref="Failed"/> because it is
+    /// neither: the file is still there, and it will not be after the next restart. An
+    /// operator told "removed" would go looking for it and find it, and one told "failed"
+    /// would try again for no reason.
+    /// </remarks>
+    PendingRestart = 7,
 }
 
 public sealed record ItemResult(
@@ -44,8 +55,12 @@ public sealed record ItemResult(
 ///     capturing what it destroys.
 ///   </description></item>
 ///   <item><description>
-///     <b>Identity is re-verified.</b> An item whose live fingerprint contradicts what
-///     was recorded is skipped and reported, never removed on the strength of its path.
+///     <b>Identity is re-verified where the recording captured one.</b> An item whose live
+///     fingerprint contradicts what was recorded is skipped and reported, never removed on
+///     the strength of its path. Not every item carries a fingerprint — the program's own
+///     binaries are recognised by having been loaded rather than by having been created, and
+///     nothing hashed them — so for those the check reports that identity is unconfirmed and
+///     the operator's approval of the list is what stands behind the removal.
 ///   </description></item>
 ///   <item><description>
 ///     <b>A rollback journal is written as it goes</b>, not at the end, so an
@@ -53,13 +68,13 @@ public sealed record ItemResult(
 ///   </description></item>
 /// </list>
 /// </remarks>
-public sealed class RemediationRunner
+public sealed class RemediationRunner : IDisposable
 {
     private readonly PathNormalizer _paths;
     private readonly SafetyPolicy _policy;
     private readonly string _quarantineRoot;
     private readonly bool _apply;
-    private readonly StreamWriter? _journal;
+    private StreamWriter? _journal;
 
     /// <summary>
     /// Called for each item that policy permits but that needs a human decision.
@@ -80,6 +95,17 @@ public sealed class RemediationRunner
     /// </remarks>
     public Action<RemediationProgress>? Progress { get; init; }
 
+    /// <summary>
+    /// How hard this run may try when something will not move.
+    /// </summary>
+    /// <remarks>
+    /// Standard on the first pass. The escalation past naming the holder changes things
+    /// the operator did not ask to change — a running process, a file's owner, the state
+    /// of the machine until it next restarts — so it happens on a second pass they asked
+    /// for, against the items the first pass could not finish.
+    /// </remarks>
+    public RemovalForce Force { get; init; } = RemovalForce.Standard;
+
     public RemediationRunner(string quarantineRoot, bool apply, PathNormalizer? paths = null)
     {
         _paths = paths ?? PathNormalizer.CreateForCurrentMachine();
@@ -90,12 +116,26 @@ public sealed class RemediationRunner
         if (_apply)
         {
             Directory.CreateDirectory(_quarantineRoot);
-            _journal = new StreamWriter(
+
+            // Shared, and released when this runner is done with it.
+            //
+            // It used to be an exclusive handle held for the object's lifetime, which
+            // made the second run against a quarantine folder throw before it had done
+            // anything — and the second run is the one that retries what the first could
+            // not finish, so the feature that needed it most was the one it broke.
+            var stream = new FileStream(
                 Path.Combine(_quarantineRoot, "rollback-journal.jsonl"),
-                append: true,
-                new UTF8Encoding(false))
-            { AutoFlush = true };
+                FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+
+            _journal = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
         }
+    }
+
+    /// <summary>Closes the rollback journal.</summary>
+    public void Dispose()
+    {
+        _journal?.Dispose();
+        _journal = null;
     }
 
     public List<ItemResult> Execute(IReadOnlyList<RemovalItem> items)
@@ -114,7 +154,8 @@ public sealed class RemediationRunner
         foreach (RemovalItem item in ordered)
         {
             index++;
-            Progress?.Invoke(new RemediationProgress(index, ordered.Count, item.Kind, item.Target, null, null));
+            Progress?.Invoke(new RemediationProgress(
+                index, ordered.Count, item.Kind, item.Target, null, null, item.ValueName, item));
 
             ItemResult result;
             try
@@ -128,7 +169,7 @@ public sealed class RemediationRunner
 
             results.Add(result);
             Progress?.Invoke(new RemediationProgress(
-                index, ordered.Count, item.Kind, item.Target, result.Outcome, result.Detail));
+                index, ordered.Count, item.Kind, item.Target, result.Outcome, result.Detail, item.ValueName, item));
         }
 
         return results;
@@ -228,33 +269,144 @@ public sealed class RemediationRunner
         string destination = QuarantinePathFor(path);
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
 
-        try
+        if (isDirectory)
         {
-            if (isDirectory)
+            // A folder goes only when it is empty, which is the whole guarantee behind
+            // listing a program's directory alongside its files: whatever the operator
+            // decided to keep is still in there, and keeps the folder.
+            try
             {
                 if (Directory.EnumerateFileSystemEntries(path).Any())
                 {
                     return new ItemResult(item, ItemOutcome.SkippedByPolicy,
-                        "directory is not empty; its contents were not all part of this plan");
+                        Describe(path, "something in it was not part of this plan, or was kept"));
                 }
+
                 Directory.Move(path, destination);
             }
-            else
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                File.Move(path, destination, overwrite: false);
+                return new ItemResult(item, ItemOutcome.Failed, ex.Message);
             }
+
+            Journal("filesystem", item.Target, new { original = path, quarantined = destination, isDirectory = true });
+            return new ItemResult(item, ItemOutcome.Removed, "moved to quarantine", destination);
+        }
+
+        (bool moved, string detail, bool deferred) = MoveWithEscalation(path, destination);
+
+        if (!moved)
+            return new ItemResult(item, ItemOutcome.Failed, detail);
+
+        Journal("filesystem", item.Target, new { original = path, quarantined = destination, isDirectory = false });
+
+        return deferred
+            ? new ItemResult(item, ItemOutcome.PendingRestart, detail, destination)
+            : new ItemResult(item, ItemOutcome.Removed, detail, destination);
+    }
+
+    /// <summary>
+    /// Moves a file, and when it will not move, works out why and does something about it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The rungs are climbed in order of what they cost. The plain move costs nothing.
+    /// Clearing read-only costs nothing that matters. Naming the holder costs nothing and
+    /// is usually the answer on its own — an operator told "Explorer has it open" closes
+    /// the preview pane, and nothing else was ever needed.
+    /// </para>
+    /// <para>
+    /// Everything past that point costs something real and only happens when the operator
+    /// asked for it: stopping a process ends whatever it was doing, taking ownership
+    /// rewrites a permission, and scheduling the move for the next restart leaves the file
+    /// in place until then. So the first pass stops at naming the holder and reports it,
+    /// and the operator decides whether to try harder.
+    /// </para>
+    /// </remarks>
+    private (bool Moved, string Detail, bool Deferred) MoveWithEscalation(string path, string destination)
+    {
+        var log = new List<string>();
+
+        if (TryMove(path, destination, out string first)) return (true, "moved to quarantine", false);
+        log.Add(first);
+
+        RemovalAttempt attributes = StubbornFile.ClearAttributes(path);
+        if (attributes.Succeeded)
+        {
+            log.Add($"cleared attributes ({attributes.Detail})");
+            if (TryMove(path, destination, out _)) return (true, string.Join("; ", log), false);
+        }
+
+        IReadOnlyList<FileHolder> holders = StubbornFile.WhoIsHolding(path, out string lookup);
+
+        if (holders.Count > 0)
+            log.Add("held by " + string.Join(", ", holders.Select(static h => h.ToString())));
+        else if (lookup.Length > 0)
+            log.Add(lookup);
+        else
+            log.Add("nothing has it open");
+
+        if (Force == RemovalForce.Standard)
+        {
+            log.Add(holders.Count > 0
+                ? "close it and retry, or retry insisting"
+                : "retry insisting to take ownership and finish at the next restart");
+
+            return (false, string.Join("; ", log), false);
+        }
+
+        if (holders.Count > 0)
+        {
+            RemovalAttempt stopped = StubbornFile.StopHolders(holders);
+            log.Add(stopped.Detail);
+            if (stopped.Succeeded && TryMove(path, destination, out _))
+                return (true, string.Join("; ", log), false);
+        }
+
+        RemovalAttempt owned = StubbornFile.TakeOwnership(path);
+        log.Add(owned.Succeeded ? "took ownership" : $"ownership: {owned.Detail}");
+        if (owned.Succeeded && TryMove(path, destination, out _))
+            return (true, string.Join("; ", log), false);
+
+        RemovalAttempt scheduled = StubbornFile.ScheduleForRestart(path, destination);
+        log.Add(scheduled.Detail);
+
+        return (scheduled.Succeeded, string.Join("; ", log), scheduled.Succeeded);
+    }
+
+    private static bool TryMove(string path, string destination, out string why)
+    {
+        try
+        {
+            File.Move(path, destination, overwrite: false);
+            why = string.Empty;
+            return true;
         }
         catch (IOException ex)
         {
-            return new ItemResult(item, ItemOutcome.Failed, $"in use or locked: {ex.Message}");
+            why = $"in use or locked: {ex.Message}";
+            return false;
         }
         catch (UnauthorizedAccessException ex)
         {
-            return new ItemResult(item, ItemOutcome.Failed, $"access denied: {ex.Message}");
+            why = $"access denied: {ex.Message}";
+            return false;
         }
+    }
 
-        Journal("filesystem", item.Target, new { original = path, quarantined = destination, isDirectory });
-        return new ItemResult(item, ItemOutcome.Removed, "moved to quarantine", destination);
+    private static string Describe(string path, string why)
+    {
+        try
+        {
+            string[] left = Directory.GetFileSystemEntries(path);
+            string sample = string.Join(", ", left.Take(4).Select(Path.GetFileName));
+            string more = left.Length > 4 ? $" and {left.Length - 4} more" : string.Empty;
+            return $"{left.Length} still in it ({sample}{more}) — {why}";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return why;
+        }
     }
 
     /// <summary>

@@ -8,13 +8,32 @@ namespace CaYaTrace.Remediation;
 /// <see cref="Kind"/> is null for the preparation steps — stopping a service, clearing a
 /// recovery action — which are real work with real messages but are not items on the plan.
 /// </remarks>
+/// <param name="ValueName">Set for a registry value, so a key with several values reads right.</param>
+/// <param name="Item">
+/// The plan item this is about, or null for a preparation step.
+/// </param>
+/// <remarks>
+/// <para>
+/// The item is carried rather than described so a caller can match a report back to the
+/// row it approved without reconstructing a key from the pieces. That mattered as soon as
+/// the workbench started marking rows live: the runner reorders its work — services before
+/// binaries, directories after their contents — so position says nothing, and a key built
+/// from kind and path collapsed three values under one registry key onto one row.
+/// </para>
+/// <para>
+/// Compared by reference at the far end, never by value, because two plan items can be
+/// equal and still be different rows.
+/// </para>
+/// </remarks>
 public sealed record RemediationProgress(
     int Index,
     int Total,
     RemovalKind? Kind,
     string Target,
     ItemOutcome? Outcome,
-    string? Detail)
+    string? Detail,
+    string? ValueName = null,
+    RemovalItem? Item = null)
 {
     /// <summary>Zero until the first item, so a caller can show a bar that starts empty.</summary>
     public int Percent => Total <= 0 ? 0 : (int)Math.Round(Index * 100.0 / Total);

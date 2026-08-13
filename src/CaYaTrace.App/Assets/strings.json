@@ -514,7 +514,23 @@
     "proxy.sweep.winhttp_restored": "Put the machine-wide WinHTTP proxy back the way an interrupted CaYaTrace session found it.",
     "proxy.sweep.winhttp_needs_admin": "An interrupted CaYaTrace session left the machine-wide WinHTTP proxy pointing at a port that is no longer listening. Services, installers and updaters will fail to reach the network until it is put back, and doing that needs administrator rights. Run CaYaTrace as administrator, or from an elevated prompt run:  netsh winhttp reset proxy",
     "proxy.sweep.ca_removed": "Removed a temporary certificate authority left in this machine's trusted roots by an interrupted CaYaTrace session.",
-    "proxy.sweep.ca_needs_admin": "A temporary CaYaTrace certificate authority is still trusted by this machine and could not be removed without administrator rights. While it is trusted, anything running as you can impersonate any website. It expires on its own within 12 hours of being created; to clear it now, run CaYaTrace as administrator."
+    "proxy.sweep.ca_needs_admin": "A temporary CaYaTrace certificate authority is still trusted by this machine and could not be removed without administrator rights. While it is trusted, anything running as you can impersonate any website. It expires on its own within 12 hours of being created; to clear it now, run CaYaTrace as administrator.",
+    "remediate.retry": "Try harder on what is left",
+    "remediate.retry_available": "{0} could not be moved",
+    "remediate.retry_hint": "A second pass can stop whatever is holding a file, take ownership of it, and hand anything still immovable to Windows to finish at the next restart. Nothing is deleted either way.",
+    "remediate.retry_confirm_title": "Insist on {0} items?",
+    "remediate.retry_confirm_body": "This stops the processes holding these files, takes ownership where access is denied, and schedules anything still locked to be moved at the next restart. They go to the same quarantine folder and can be put back.",
+    "remediate.pending_restart": "Waiting for restart",
+    "outcome.waiting": "Waiting",
+    "outcome.working": "Working",
+    "outcome.removed": "Removed",
+    "outcome.pendingrestart": "At restart",
+    "outcome.notpresent": "Not there",
+    "outcome.skippedbypolicy": "Kept",
+    "outcome.skippedfingerprintmismatch": "Different file",
+    "outcome.skippedbyoperator": "Kept",
+    "outcome.failed": "In the way",
+    "outcome.pending": "Waiting"
   },
   "tr": {
     "app.title": "CaYaTrace",
@@ -1019,6 +1035,22 @@
     "proxy.sweep.winhttp_restored": "Yarıda kalan bir CaYaTrace oturumunun değiştirdiği makine genelindeki WinHTTP ara sunucu ayarı eski haline getirildi.",
     "proxy.sweep.winhttp_needs_admin": "Yarıda kalan bir CaYaTrace oturumu, makine genelindeki WinHTTP ara sunucusunu artık dinlenmeyen bir bağlantı noktasına yönlendirilmiş bırakmış. Bu geri alınana kadar hizmetler, kurulum programları ve güncelleyiciler ağa erişemez; geri almak da yönetici yetkisi ister. CaYaTrace'i yönetici olarak çalıştırın veya yükseltilmiş bir komut isteminde şunu çalıştırın:  netsh winhttp reset proxy",
     "proxy.sweep.ca_removed": "Yarıda kalan bir CaYaTrace oturumunun bu makinenin güvenilir köklerinde bıraktığı geçici sertifika yetkilisi kaldırıldı.",
-    "proxy.sweep.ca_needs_admin": "Geçici bir CaYaTrace sertifika yetkilisi bu makine tarafından hâlâ güveniliyor ve yönetici yetkisi olmadan kaldırılamadı. Güvenildiği sürece sizin yetkinizle çalışan herhangi bir program kendini herhangi bir web sitesi gibi gösterebilir. Oluşturulmasından itibaren 12 saat içinde kendiliğinden geçersiz olur; şimdi temizlemek için CaYaTrace'i yönetici olarak çalıştırın."
+    "proxy.sweep.ca_needs_admin": "Geçici bir CaYaTrace sertifika yetkilisi bu makine tarafından hâlâ güveniliyor ve yönetici yetkisi olmadan kaldırılamadı. Güvenildiği sürece sizin yetkinizle çalışan herhangi bir program kendini herhangi bir web sitesi gibi gösterebilir. Oluşturulmasından itibaren 12 saat içinde kendiliğinden geçersiz olur; şimdi temizlemek için CaYaTrace'i yönetici olarak çalıştırın.",
+    "remediate.retry": "Kalanlar için daha ısrarcı dene",
+    "remediate.retry_available": "{0} öğe taşınamadı",
+    "remediate.retry_hint": "İkinci geçiş, dosyayı tutan süreci durdurabilir, sahipliğini alabilir ve hâlâ kımıldamayanı bir sonraki yeniden başlatmada Windows’a bitirtebilir. Her iki durumda da hiçbir şey silinmez.",
+    "remediate.retry_confirm_title": "{0} öğe için ısrar edilsin mi?",
+    "remediate.retry_confirm_body": "Bu, bu dosyaları tutan süreçleri durdurur, erişim reddedilen yerlerde sahipliği alır ve hâlâ kilitli olanları bir sonraki yeniden başlatmada taşınmak üzere sıraya koyar. Hepsi aynı karantina klasörüne gider ve geri alınabilir.",
+    "remediate.pending_restart": "Yeniden başlatma bekliyor",
+    "outcome.waiting": "Bekliyor",
+    "outcome.working": "İşleniyor",
+    "outcome.removed": "Kaldırıldı",
+    "outcome.pendingrestart": "Yeniden başlatmada",
+    "outcome.notpresent": "Yok",
+    "outcome.skippedbypolicy": "Bırakıldı",
+    "outcome.skippedfingerprintmismatch": "Farklı dosya",
+    "outcome.skippedbyoperator": "Bırakıldı",
+    "outcome.failed": "Engellendi",
+    "outcome.pending": "Bekliyor"
   }
 }

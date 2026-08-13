@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-dc2626.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-111826.svg)](#requirements)
 [![.NET](https://img.shields.io/badge/.NET-8.0-182438.svg)](#requirements)
-[![Status](https://img.shields.io/badge/status-0.5.3%20preview-b91c1c.svg)](docs/ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-0.5.4%20preview-b91c1c.svg)](docs/ROADMAP.md)
 
 [Türkçe README](README.tr.md) · [Architecture](docs/ARCHITECTURE.md) · [Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md)
 

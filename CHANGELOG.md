@@ -1,8 +1,86 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
+
+## [0.5.4] — 2026-08-13
+
+### Fixed
+
+**The plan did not contain the program.** Its executable and the library beside it were
+absent from the plan to remove it, while the recording had named both four different ways.
+The footprint was built by reading the program's directory off the disk at plan time, which
+works exactly once — on the machine that still holds the files, before anything has removed
+them. On the session this was measured against, an antivirus had quarantined the executable
+between the recording and the plan, so the directory listing returned two files and the two
+that had done all the work were simply gone.
+
+The recording is now the source and the disk is only ever an addition to it. Two signals
+carry it:
+
+- **Every module the program loaded that Windows does not own.** The strongest statement a
+  recording makes about what a program consists of, and the only one that reaches a library
+  side-loaded from somewhere it should not be. Measured: the subject's process tree loaded
+  74 modules, 72 out of System32 and two out of its own directory.
+- **Every file in its directory the recording shows being *used*** — loaded, read, written —
+  as opposed to merely opened.
+
+That last distinction matters more than it sounds. The DLL search order tries the
+application's own directory first, so resolving imports produces an open for every Windows
+library *inside the program's folder*, for files that do not exist and never did. A plan
+built from opened paths lists a dozen of them, one of which is `cmd.exe` wearing a path
+under the operator's profile that passes every check written to recognise a system location.
+Thirteen were rejected on the session this was measured against, and the four real files
+kept.
+
+It is also now the same answer on every machine. Observations are tokenized when written, so
+a session recorded under one profile and read under another had the footprint resolving to
+`%USERSROOT%\<name>\…` against the recording's `%USERPROFILE%\…` — two strings that never
+met.
+
+**A folder now has to be earned.** Reading a program's directory finds what it shipped and
+never touched — a licence, an unused plugin — which no recording can name. It also finds
+everything else in there, and a program run straight out of a downloads folder has a
+"directory" that belongs to the operator. So the proportion decides: when the program's own
+files are most of what is in the folder, the rest goes with it and the folder is offered;
+when they are a minority, nothing is taken but what the recording named. A proportion rather
+than a file count, because the number of files a program ships has no useful bound.
+
+**A locked file said "in use or locked" and stopped.** That tells an operator nothing they
+can act on. The machine knows what is holding it, so it is now asked: the Restart Manager
+names the processes with the file open, and most of the time that is the whole answer,
+because most of the time it is a preview pane and closing it costs nothing.
+
+When naming it is not enough, a second pass — asked for explicitly, never automatic —
+climbs the rest: clear the attributes that are bookkeeping rather than protection, stop the
+processes holding the file, take ownership where access is denied, and hand anything still
+immovable to the session manager to move before anything else starts at the next restart.
+Nothing on the ladder deletes; the restart-time operation moves the file into quarantine
+exactly as the immediate path does, so a removal that finishes after a reboot is as
+reversible as one that finishes straight away. Anything Windows marks critical is left
+alone.
+
+**A removal reported one line and showed its results only once it was over.** Every item now
+carries its own live status as the run proceeds — waiting, working, removed, kept, at
+restart, in the way — with what stood in the way written beside it, and an offer to try
+harder on whatever is left.
+
+- The rollback journal was an exclusive handle held for the runner's lifetime, so a second
+  run against the same quarantine folder threw before doing anything. That is precisely the
+  run that retries what the first could not finish.
+- A folder that could not be removed said only that it was not empty. It now names what is
+  still in it, which is the difference between a refusal and an explanation.
+- Progress reports carry the plan item itself rather than a description of it, so several
+  values under one registry key no longer collapse onto a single row.
+
+### Also fixed
+
+- **Remediation plan UI and state management:** plan building state transitions, clearing
+  previous plan and remediation state when loading sessions or packages, plan table
+  rendering, and error feedback.
+- **Export package handling:** guarded when the plan came from an imported package, and made
+  state consistent across plan re-evaluations.
 
 ## [0.5.3] — 2026-08-13
 

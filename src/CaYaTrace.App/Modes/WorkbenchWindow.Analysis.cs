@@ -22,6 +22,18 @@ public sealed partial class WorkbenchWindow
 {
     private List<RemovalItem> _planItems = new();
     private string? _quarantineRoot;
+    private bool _planFromPackage;
+    private string? _sweepNote;
+    private IReadOnlyList<string> _sweepTerms = Array.Empty<string>();
+
+    private void ResetPlanState()
+    {
+        _planItems = new();
+        _quarantineRoot = null;
+        _planFromPackage = false;
+        _sweepNote = null;
+        _sweepTerms = Array.Empty<string>();
+    }
 
     /// <summary>
     /// A VirusTotal key typed into the workbench, held for this process only.
@@ -208,7 +220,19 @@ public sealed partial class WorkbenchWindow
 
     private void BuildPlan(JsonElement payload)
     {
-        if (_store is null || _session is null) return;
+        if (_store is null || _session is null)
+        {
+            string message = Strings.T("remediate.no_session");
+            Post("plan", new
+            {
+                items = Array.Empty<object>(),
+                quarantine = (string?)null,
+                error = message,
+                canExport = false,
+            });
+            Toast(message, "error");
+            return;
+        }
 
         var options = new PlanOptions(
             Bool(payload, "includeModified"),
@@ -219,6 +243,7 @@ public sealed partial class WorkbenchWindow
                 : LeftoverDepth.None);
 
         _planItems = BuildPlanItems(options);
+        _planFromPackage = false;
         _quarantineRoot = Path.Combine(
             Path.GetDirectoryName(_sessionPath) ?? Environment.CurrentDirectory, "quarantine");
 
@@ -227,6 +252,9 @@ public sealed partial class WorkbenchWindow
 
     private List<RemovalItem> BuildPlanItems(PlanOptions options)
     {
+        _sweepNote = null;
+        _sweepTerms = Array.Empty<string>();
+
         var planner = new RemovalPlanner(_store!, options: new RemovalPlannerOptions
         {
             ScopedOnly = !options.IncludeOutOfScope,
@@ -265,9 +293,6 @@ public sealed partial class WorkbenchWindow
                     .ThenBy(static i => i.Target, StringComparer.OrdinalIgnoreCase)
                     .ToList();
     }
-
-    private string? _sweepNote;
-    private IReadOnlyList<string> _sweepTerms = Array.Empty<string>();
 
     /// <summary>
     /// Runs the leftover sweep, using what the session knows about the subject as terms.
@@ -342,6 +367,7 @@ public sealed partial class WorkbenchWindow
         {
             items,
             quarantine = _quarantineRoot,
+            canExport = !_planFromPackage && _session is not null,
 
             // What the sweep searched for, so a match nobody expected is explainable
             // rather than mysterious — and so an empty sweep can say it had no
@@ -353,7 +379,7 @@ public sealed partial class WorkbenchWindow
 
     private void ExportPackage(JsonElement payload)
     {
-        if (_session is null) return;
+        if (_session is null || _store is null || _planFromPackage) return;
 
         List<RemovalItem> chosen = Select(StringList(payload, "ids"));
         if (chosen.Count == 0) { Toast(Strings.T("remediate.empty")); return; }
@@ -407,7 +433,8 @@ public sealed partial class WorkbenchWindow
     /// </remarks>
     private void ApplyPlan(JsonElement payload)
     {
-        List<RemovalItem> chosen = Select(StringList(payload, "ids"));
+        List<string> ids = StringList(payload, "ids");
+        List<RemovalItem> chosen = Select(ids);
         if (chosen.Count == 0) return;
 
         if (!Privilege.IsElevated())
@@ -416,14 +443,28 @@ public sealed partial class WorkbenchWindow
             return;
         }
 
+        // The second pass, against what the first could not finish. It stops the process
+        // holding a file, takes ownership, and hands anything still immovable to the
+        // session manager for the next restart — all of which change something the
+        // operator did not ask to change, so none of it happens unless they say so.
+        RemovalForce force = string.Equals(Str(payload, "force"), "insistent", StringComparison.Ordinal)
+            ? RemovalForce.Insistent
+            : RemovalForce.Standard;
+
         string quarantine = _quarantineRoot ?? Path.Combine(
             Path.GetDirectoryName(_sessionPath) ?? Environment.CurrentDirectory, "quarantine");
+
+        // Which row on the page each item came from, so a result can be shown against the
+        // item it belongs to while the run is still going. The runner reorders its work —
+        // services before binaries, directories after their contents — so position in the
+        // result list says nothing about position on the page.
+        _idByItem = BuildIdMap(ids, chosen);
 
         _ = Task.Run(() =>
         {
             try
             {
-                var runner = new RemediationRunner(quarantine, apply: true)
+                using var runner = new RemediationRunner(quarantine, apply: true)
                 {
                     // The operator approved this exact list in the confirmation. Asking
                     // again per item, with no console to ask on, would mean skipping
@@ -431,6 +472,7 @@ public sealed partial class WorkbenchWindow
                     ConfirmationHandler = static (_, _, _) => true,
 
                     Progress = PostRemediationProgress,
+                    Force = force,
                 };
 
                 // The protected path, not the plain one. Anything configured to restart
@@ -439,7 +481,8 @@ public sealed partial class WorkbenchWindow
                 // while its subject is putting itself back looks like it worked.
                 (DisarmResult disarmed, List<ItemResult> results) = runner.ExecuteProtected(chosen);
 
-                int removed = results.Count(static r => r.Outcome == ItemOutcome.Removed);
+                int removed = results.Count(static r => r.Outcome
+                    is ItemOutcome.Removed or ItemOutcome.PendingRestart);
                 int skipped = results.Count(static r => r.Outcome
                     is ItemOutcome.SkippedByPolicy
                     or ItemOutcome.SkippedFingerprintMismatch
@@ -460,6 +503,46 @@ public sealed partial class WorkbenchWindow
         });
     }
 
+    /// <summary>
+    /// The page row each chosen item came from.
+    /// </summary>
+    /// <remarks>
+    /// Keyed on the object, not on what the object says. Two plan items can be equal —
+    /// <see cref="RemovalItem"/> is a record — and still be two different rows, so value
+    /// equality would silently merge them and mark one row twice while leaving the other
+    /// blank for the whole run.
+    /// </remarks>
+    private Dictionary<RemovalItem, string> _idByItem = new(ByReference.Instance);
+
+    private sealed class ByReference : IEqualityComparer<RemovalItem>
+    {
+        public static readonly ByReference Instance = new();
+
+        public bool Equals(RemovalItem? a, RemovalItem? b) => ReferenceEquals(a, b);
+
+        public int GetHashCode(RemovalItem item)
+            => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(item);
+    }
+
+    private static Dictionary<RemovalItem, string> BuildIdMap(List<string> ids, List<RemovalItem> chosen)
+    {
+        // Select keeps plan order and drops what it does not recognise, so the ids that
+        // survive, in order, line up with the items it returned.
+        List<string> recognised = ids
+            .Where(static id => int.TryParse(id, out _))
+            .Select(static id => int.Parse(id, System.Globalization.CultureInfo.InvariantCulture))
+            .Distinct()
+            .OrderBy(static i => i)
+            .Select(static i => i.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            .ToList();
+
+        var map = new Dictionary<RemovalItem, string>(ByReference.Instance);
+        for (int i = 0; i < chosen.Count && i < recognised.Count; i++)
+            map[chosen[i]] = recognised[i];
+
+        return map;
+    }
+
     private void PostRemediationProgress(RemediationProgress progress) => Post("remediation", new
     {
         running = true,
@@ -472,6 +555,12 @@ public sealed partial class WorkbenchWindow
         outcome = progress.Outcome?.ToString(),
         detail = progress.Detail,
         finished = progress.Outcome is not null,
+
+        // Which row this is, so the page can mark it as it happens rather than showing a
+        // list once everything is over. A removal is the only thing here that changes the
+        // operator's machine, and watching it item by item is how they notice it going
+        // wrong while there is still something to do about it.
+        id = progress.Item is not null && _idByItem.TryGetValue(progress.Item, out string? row) ? row : null,
     });
 
     /// <summary>
@@ -510,14 +599,25 @@ public sealed partial class WorkbenchWindow
             }).ToList(),
             actions = disarmed.Actions,
             blocked = disarmed.Failures,
-            items = results.Select(static r => new
+            items = results.Select(r => new
             {
+                id = _idByItem.TryGetValue(r.Item, out string? id) ? id : null,
                 kind = r.Item.Kind.ToString(),
                 target = r.Item.Target,
                 value = r.Item.ValueName,
                 outcome = r.Outcome.ToString(),
                 detail = r.Detail,
+
+                // What a second, harder pass could still do something about. Everything
+                // else is either finished or refused for a reason another attempt would
+                // not change.
+                retryable = r.Outcome == ItemOutcome.Failed,
             }).ToList(),
+
+            // Offered rather than assumed. The escalation stops processes and rewrites
+            // permissions, so it is a decision, and a decision needs something to decide
+            // about — which is this count.
+            retryable = results.Count(static r => r.Outcome == ItemOutcome.Failed),
             held = quarantine.Contents().Select(static q => new
             {
                 path = q.QuarantinePath,
@@ -656,7 +756,14 @@ public sealed partial class WorkbenchWindow
                 return;
             }
 
+            items = items.OrderBy(static i => i.Order)
+                         .ThenBy(static i => i.Target, StringComparer.OrdinalIgnoreCase)
+                         .ToList();
+
             _planItems = items;
+            _planFromPackage = true;
+            _sweepNote = null;
+            _sweepTerms = Array.Empty<string>();
             _quarantineRoot = Path.Combine(
                 Path.GetDirectoryName(path) ?? Environment.CurrentDirectory, "quarantine");
 

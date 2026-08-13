@@ -181,8 +181,8 @@ public sealed class PersistenceAnalyzerTests
         var observations = new[]
         {
             Registry(
-                @"HKLM\SYSTEM\ControlSet001\Services\bam\State\UserSettings\S-1-5-21-3023131402-199173579-3080135376-1000",
-                @"\Device\HarddiskVolume3\Users\PC\Desktop\Vendor Setup (Windows).exe",
+                @"HKLM\SYSTEM\ControlSet001\Services\bam\State\UserSettings\S-1-5-21-1111111111-2222222222-3333333333-1000",
+                @"\Device\HarddiskVolume1\Users\Analyst\Desktop\Vendor Setup (Windows).exe",
                 "0c1136b3502add01"),
         };
 

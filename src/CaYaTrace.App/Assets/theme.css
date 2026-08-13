@@ -489,6 +489,15 @@ label.field > .hint,
 .toggle .d { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
 .toggle + .toggle { border-top: 1px solid var(--border-color); }
 
+.plan-sweep {
+  display: block;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+.plan-sweep .t { font-size: 13px; }
+.plan-sweep .d { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
+
 /* --------------------------------------------------------------- filters */
 
 .filterbar {
@@ -857,6 +866,42 @@ table.data td.mono { font-family: var(--font-mono); word-break: break-all; }
 table.data td.num { font-family: var(--font-mono); text-align: right; white-space: nowrap; }
 table.data td.nowrap { white-space: nowrap; }
 table.data td.wide { max-width: 520px; }
+
+.plan-table table.data {
+  table-layout: fixed;
+  min-width: 900px;
+}
+
+.plan-table table.data th:first-child,
+.plan-table table.data td.plan-check {
+  width: 34px;
+  padding-left: 8px;
+  padding-right: 8px;
+  text-align: center;
+}
+
+.plan-table table.data th:nth-child(2),
+.plan-table table.data td.plan-target {
+  width: 64%;
+}
+
+.plan-table table.data th:nth-child(3),
+.plan-table table.data td.plan-reason {
+  width: 30%;
+}
+
+.plan-table table.data td.plan-target {
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.plan-table table.data td.plan-reason {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: normal;
+}
 
 .method {
   display: inline-block;
@@ -1230,6 +1275,40 @@ table.data td.wide { max-width: 520px; }
 .defence-what { font-size: 12px; overflow-wrap: anywhere; }
 .defence-response { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 .defence-blocked .defence-what { color: #f0a03c; }
+
+/*
+ * The live board: every item in the run, with what happened to it.
+ *
+ * The status word is the meaning; the colour only repeats it. Nothing here can be read by
+ * hue alone, which matters for a screen whose whole purpose is telling "removed" from "in
+ * the way" while a machine is being changed.
+ */
+.run-board { margin-top: 10px; }
+.run-row .kvname { white-space: nowrap; font-size: 11px; letter-spacing: 0.02em; }
+.run-row .kvdata code { font-size: 11px; }
+
+.run-waiting .kvname, .run-pending .kvname { color: var(--text-muted); }
+.run-working .kvname { color: var(--info); }
+.run-removed .kvname { color: var(--success); }
+.run-pendingrestart .kvname { color: var(--warning); }
+.run-failed .kvname { color: var(--danger); }
+.run-notpresent .kvname { color: var(--text-muted); }
+.run-skippedbypolicy .kvname,
+.run-skippedbyoperator .kvname,
+.run-skippedfingerprintmismatch .kvname { color: #f0a03c; }
+
+.run-working { background: rgba(56, 189, 248, 0.06); }
+
+.retry-box {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--bg-dark);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 8px;
+}
+
+.retry-what { font-size: 13px; color: var(--danger); margin-bottom: 4px; }
+.retry-box .hint { margin-bottom: 10px; }
 
 /* --------------------------------------------------------------------- fleet */
 

@@ -74,3 +74,7 @@ scratch/
 # note at the top of this file about why none of it belongs in the repository.
 .preview/
 preview/
+
+# Build output staged for a release. Rebuilt from source every time; never a
+# thing the repository should carry.
+dist/

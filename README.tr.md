@@ -7,7 +7,7 @@
 [![Lisans: MIT](https://img.shields.io/badge/Lisans-MIT-dc2626.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-111826.svg)](#gereksinimler)
 [![.NET](https://img.shields.io/badge/.NET-8.0-182438.svg)](#gereksinimler)
-[![Durum](https://img.shields.io/badge/durum-0.3.0%20önizleme-b91c1c.svg)](docs/ROADMAP.md)
+[![Durum](https://img.shields.io/badge/durum-0.4.0%20önizleme-b91c1c.svg)](docs/ROADMAP.md)
 
 [English README](README.md) · [Mimari](docs/ARCHITECTURE.md) · [Güvenlik](SECURITY.md) · [Yol haritası](docs/ROADMAP.md)
 
@@ -72,7 +72,7 @@ hiç çalışmadığı bir cihaza götürüp orada temizlik yapabilirsiniz — h
 - **Cihazı bozamayacak bir kaldırma.** Geçersiz kılınamayan yasak listesi, parmak izi
   doğrulaması, silme yerine karantina, geri alma günlüğü ve varsayılan olarak prova modu.
 
-## Durum — 0.3.0 önizleme
+## Durum — 0.4.0 önizleme
 
 Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış olan dürüstçe ayrılmıştır:
 
@@ -102,7 +102,10 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Kalıcılık: bir programın tekrar çalışmak için kullandığı her yöntem ve ayarları | ✅ çalışıyor |
 | Süreç zaman çizelgesi: ne çalıştı, ne kadar, hangi üst süreçle, neye dokundu | ✅ çalışıyor |
 | Paketlerden yeniden kurulan konuşma içerikleri; yerel ağ ile internet ayrı | ✅ çalışıyor |
-| Oturuma soru sorma: yanıtlar kayıttan hesaplanır, model yalnızca yeniden ifade eder | ✅ çalışıyor |
+| Oturuma soru sorma: yanıtlar kayıttan hesaplanır; model karşılaştırıp sıralayabilir, uyduramaz | ✅ çalışıyor |
+| Sohbeti takip eden, adını verdiğiniz şeye daraltan ve tek bir dayanaklı komut üreten asistan | ✅ çalışıyor |
+| Tanımadığınız bir ad için sohbetten web araması; varsayılan olarak kapalı | ✅ çalışıyor |
+| Oturum öldürülse bile makinede yapılan değişikliklerin bir sonraki açılışta geri alınması | ✅ çalışıyor |
 | Kaldırma ilerlemesi, kendini koruma etkisizleştirme, karantina: tut/geri koy/sil | ✅ çalışıyor |
 | Filo: pencereden katılma, makine başına canlı görünüm, uzaktan süreç/servis durdurma | ✅ çalışıyor |
 | Bu makinedeki süreçler arası konuşmalar; her iki uçtaki program adıyla | ✅ çalışıyor |

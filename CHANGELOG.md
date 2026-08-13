@@ -4,6 +4,104 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-08-13
+
+Two features that had never worked, found by running the shipping binary instead of
+reading it, and an assistant rebuilt around a transcript of somebody using the old one.
+
+### Fixed
+
+**HTTPS interception had never once worked.** A session with it enabled reported zero
+exchanges, zero failed connections and no explanation — which reads exactly like a program
+that made no requests. Three faults were stacked on top of each other and a bare `catch`
+at the top of the accept loop kept all three off the screen:
+
+- Traffic never reached the proxy. Writing the registry does not move a process already
+  running — WinINet caches the setting until told to re-read it, and WinHTTP never consults
+  that key at all, so services, installers and updaters went straight out. Both are now
+  configured, WinHTTP through its own API rather than `netsh`, because spawning a process
+  mid-recording puts the tool into its own evidence.
+- Every TLS connection then threw before a byte moved. A leaf certificate was minted at
+  "now plus twelve hours" while its authority had been created earlier with the same
+  lifetime, so the leaf always outlived its issuer and certificate creation refused it
+  outright — from the very first connection, for the whole life of the feature.
+- The certificate that then built was one Schannel will not accept as a server credential,
+  because its key was ephemeral. It failed as a `Win32Exception`, which is neither of the
+  two exception types the handler caught, so it escaped as well.
+
+Both catches now report instead of swallowing. That is the actual repair — the certificates
+were only bugs, and a bug that cannot be seen is the part that lasts.
+
+**The proxy setting could be left behind for good.** It lived in a field, so a clean stop
+restored it and anything else did not — and anything else is the expected case when the
+thing being recorded fights back. What it left was a machine configured to reach the
+network through a port nobody is listening on: every browser, updater and installer fails,
+with errors that name no cause, and unlike the certificate it never expires. The previous
+configuration is now written to disk *before* it is changed and undone on the next launch
+whatever that launch was asked to do. It only undoes its own change; a proxy the operator
+set themselves afterwards is left alone.
+
+**A scoped session could contain other programs' traffic.** With interception on, the
+system proxy is machine-wide and every program's requests arrive. Ownership was resolved
+from the connection table with a throttle that allowed one lookup per second, so the first
+connection in any burst got an answer and the rest were attributed to nobody — and
+unattributed traffic was kept. Measured, on a session recording one PowerShell script: the
+operator's desktop-app telemetry with a key in the query string, their GitHub API calls,
+and their editor's API traffic. Windows is now asked who owns the port whether or not the
+session recognises the answer, and a process the session has never seen is not a failure to
+attribute — it is somebody else's.
+
+**Every local conversation reported twice the bytes it carried.** The Winsock send path is
+nested: the API is entered, an inner path is entered, both return. Counting exits counted
+each send twice, while a receive is a single pair and was right. A probe sending exactly
+three buffers of ten bytes reported six sends of sixty; it now reports three of thirty,
+from both ends.
+
+**The build workflow failed on a missing file rather than a failing test.** The repository
+declares x64 and ARM64 platforms, so building the solution writes `bin/x64/Release` while
+testing the project on its own falls back to AnyCPU and reads `bin/Release`.
+
+### Changed
+
+**The assistant follows a conversation and answers about what was asked.** From a
+transcript of real use: asked whether anything connected to one host it returned five,
+including Windows' own connectivity checks; asked which were suspicious it said all five;
+asked which was more critical it said it did not recognise the question; asked whether
+programs had talked to each other locally it answered no and listed the same five internet
+hosts; asked which programs opened it returned seventy-three listening sockets; asked how
+to remove the suspicious services it produced instructions to delete Network Location
+Awareness and reset the network adapter.
+
+- The last few exchanges are remembered, so "which of those", "only the relevant one" and
+  "write that as one line" mean something. Clearing it is one click.
+- What a question names is extracted and the answer narrowed to it, matched against the
+  names the session holds — no pattern matches a service called `61df826a3fa71fa6`, and
+  pasting one is the shortest way to ask about it. A name the session never saw is answered
+  as absent rather than with everything else.
+- Topic matching required a word boundary. "hangi programlar açıldı" matched the listener
+  keyword "aç" inside "açıldı"; Turkish suffixes mean only the start can be anchored.
+- Conversations between programs on one machine have their own question, which is why the
+  old one answered "no" while the Winsock records said otherwise.
+- The model may now compare, rank and say what something resembles, and must mark that as
+  its reading. Three things stay out of its hands: which records an answer covers, which of
+  them the tool considers suspicious, and any command the operator might run.
+
+**Commands are built from the session, never written by a model.** For one named thing,
+gated on the analyzer's own verdict — which is what would have stopped the advice to delete
+`NlaSvc`, since the scoring already found nothing remarkable about it. A service is stopped
+before its image is deleted, the executable is parsed out of the command line rather than
+passed whole, and a driver registered by a relative path produces no delete at all.
+
+### Added
+
+**Web lookups for the assistant, off unless switched on.** Searching for a file name
+publishes it, and a name from a real intrusion is itself sensitive — that is the operator's
+disclosure to make. Names, hashes and domains only; results are labelled as somebody's
+claim rather than as evidence, and styled so the two cannot be confused.
+
+**A harness that replays a real transcript against a real session and a real model**, so
+the next assistant regression is found the way this one was.
+
 ## [0.3.0] — 2026-08-13
 
 Everything here came from someone using 0.2.0 and reporting what did not work.

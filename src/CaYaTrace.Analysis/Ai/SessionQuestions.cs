@@ -23,6 +23,9 @@ public enum SessionQuestionKind
     Injection,
     Summary,
     Removal,
+
+    /// <summary>What led to what — the launch chain, rendered.</summary>
+    Tree,
 }
 
 /// <summary>How much of an answer the operator wants.</summary>
@@ -162,6 +165,11 @@ public sealed class SessionQuestions
             "summary", "summarise", "summarize", "overview", "what happened", "what did",
             "özet", "genel", "ne yaptı", "ne oldu",
         }),
+        (SessionQuestionKind.Tree, new[]
+        {
+            "tree", "chain", "who started", "what started", "lineage", "hierarchy",
+            "ağaç", "ağac", "zincir", "kim başlattı", "hangi süreç başlattı", "hiyerarşi",
+        }),
     };
 
     public static SessionQuestionKind Classify(string question)
@@ -203,6 +211,7 @@ public sealed class SessionQuestions
         SessionQuestionKind.ProcessesStarted => Processes(detail),
         SessionQuestionKind.Injection => Injection(detail),
         SessionQuestionKind.Removal => Removal(detail),
+        SessionQuestionKind.Tree => Tree(detail),
         SessionQuestionKind.Summary => Summary(detail),
         _ => new SessionAnswer
         {
@@ -536,6 +545,102 @@ public sealed class SessionQuestions
             MatchCount = persistence.MatchCount,
             IsEmpty = persistence.IsEmpty,
             Facts = persistence.Facts,
+        };
+    }
+
+    /// <summary>
+    /// What started what, drawn.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Drawn as text rather than described, because a launch chain is a shape and a
+    /// sentence about a shape is worse than the shape. This is the one answer where the
+    /// evidence <em>is</em> the layout, so a model is not asked to reword it — see
+    /// <see cref="SessionAnswer.Facts"/> being left empty below.
+    /// </para>
+    /// <para>
+    /// Rooted on the subject when there is one, and on whatever started during the
+    /// session when there is not: a system-wide recording has no single root, and drawing
+    /// every process on the machine from Idle downwards answers nothing.
+    /// </para>
+    /// </remarks>
+    private SessionAnswer Tree(AnswerDetail detail)
+    {
+        var byParent = new Dictionary<ProcessKey, List<ProcessNode>>();
+        var byKey = new Dictionary<ProcessKey, ProcessNode>();
+
+        foreach (ProcessNode node in _processes) byKey.TryAdd(node.Key, node);
+        foreach (ProcessNode node in _processes)
+        {
+            if (!byParent.TryGetValue(node.ParentKey, out List<ProcessNode>? kids))
+                byParent[node.ParentKey] = kids = new List<ProcessNode>();
+            kids.Add(node);
+        }
+
+        List<ProcessNode> roots;
+        if (_session.RootProcess != ProcessKey.None && byKey.ContainsKey(_session.RootProcess))
+        {
+            roots = new List<ProcessNode> { byKey[_session.RootProcess] };
+        }
+        else
+        {
+            // Everything that started during the session and whose parent did not.
+            roots = _processes
+                .Where(p => !p.PreExisting && (p.ParentKey == ProcessKey.None
+                                               || !byKey.TryGetValue(p.ParentKey, out ProcessNode? parent)
+                                               || parent.PreExisting))
+                .OrderBy(static p => p.StartTime)
+                .ToList();
+        }
+
+        if (roots.Count == 0)
+        {
+            return new SessionAnswer
+            {
+                Kind = SessionQuestionKind.Tree,
+                Text = "Nothing started during this session, so there is no chain to draw.",
+                IsEmpty = true,
+            };
+        }
+
+        var lines = new List<string>();
+        int limit = detail == AnswerDetail.Detailed ? 400 : 60;
+        int drawn = 0;
+
+        void Draw(ProcessNode node, string prefix, bool last, int depth)
+        {
+            if (drawn >= limit || depth > 12) return;
+            drawn++;
+
+            string life = node.ExitTime is { } exit
+                ? $"{(exit - node.StartTime).TotalSeconds:0.#}s"
+                : "still running";
+
+            lines.Add($"{prefix}{(depth == 0 ? string.Empty : last ? "└─ " : "├─ ")}"
+                      + $"{node.ImageName} ({node.Pid})  {life}");
+
+            List<ProcessNode> kids = byParent.GetValueOrDefault(node.Key) ?? new List<ProcessNode>();
+            kids = kids.Where(k => k.Key != node.Key).OrderBy(static k => k.StartTime).ToList();
+
+            string childPrefix = depth == 0 ? string.Empty : prefix + (last ? "   " : "│  ");
+            for (int i = 0; i < kids.Count; i++) Draw(kids[i], childPrefix, i == kids.Count - 1, depth + 1);
+        }
+
+        foreach (ProcessNode root in roots.Take(detail == AnswerDetail.Detailed ? 40 : 8))
+            Draw(root, string.Empty, true, 0);
+
+        int started = _processes.Count(static p => !p.PreExisting);
+
+        return new SessionAnswer
+        {
+            Kind = SessionQuestionKind.Tree,
+            Text = $"{started} process(es) started, in {roots.Count} chain(s).",
+            Evidence = lines,
+            MatchCount = started,
+
+            // Deliberately empty. The shape is the answer; asking a model to put a
+            // drawing into prose would lose the only thing it communicates.
+            Facts = string.Empty,
         };
     }
 

@@ -104,6 +104,19 @@ public sealed class SessionAssistant
             };
         }
 
+        // Some answers are a shape rather than a sentence — the launch chain most of all.
+        // Handing a drawing to a language model to reword loses the only thing it
+        // communicates, so those answers say so by carrying no facts to reword.
+        if (answer.Facts.Length == 0)
+        {
+            return new AssistantReply
+            {
+                Question = question,
+                Answer = answer,
+                ModelNote = "not sent to a model: this answer is a drawing, not a sentence",
+            };
+        }
+
         try
         {
             using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -204,6 +217,7 @@ public sealed class SessionAssistant
     private static IReadOnlyList<string> Suggestions() => new[]
     {
         "Is anything adding itself to startup, and where?",
+        "Show me what started what.",
         "What services did it install?",
         "What scheduled tasks did it register?",
         "Which hosts did it connect to?",

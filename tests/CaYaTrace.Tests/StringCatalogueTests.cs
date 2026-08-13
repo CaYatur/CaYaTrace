@@ -191,6 +191,51 @@ public sealed class StringCatalogueTests
             + string.Join(", ", missing.Distinct().Order()));
     }
 
+    /// <summary>
+    /// Every key the launch-time sweep can report under exists.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The other two coverage tests read the page, so keys looked up from C# are checked by
+    /// nothing at all. These particular ones are the worst possible candidates for that
+    /// gap: they are the messages shown when the machine cannot reach the network, or when
+    /// an interception root is still trusted, and they surface exactly once — on the launch
+    /// after the run that went wrong. A missing key would render as
+    /// <c>proxy.sweep.winhttp_needs_admin</c> in a dialog box, on the one occasion the text
+    /// had to be readable.
+    /// </para>
+    /// <para>
+    /// Every combination is enumerated rather than a representative one, because the flags
+    /// are independent and a key is only reachable through its own.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void EveryKeyTheProxySweepCanReportExists()
+    {
+        Dictionary<string, string> english = Table("en");
+
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (bool wininet in new[] { false, true })
+        foreach (bool winhttp in new[] { false, true })
+        foreach (bool needsAdmin in new[] { false, true })
+        foreach (int stale in new[] { 0, 2 })
+        foreach (int removed in new[] { 0, 1, 2 })
+        {
+            var result = new CaYaTrace.Collectors.Proxy.ProxyRestorePoint.SweepResult(
+                FoundRestorePoint: true, RestoredWinINet: wininet, RestoredWinHttp: winhttp,
+                WinHttpNeedsElevation: needsAdmin, StaleAuthorities: stale, RemovedAuthorities: removed);
+
+            foreach (string key in result.MessageKeys()) keys.Add(key);
+        }
+
+        Assert.NotEmpty(keys);
+
+        List<string> missing = keys.Where(k => !english.ContainsKey(k)).Order().ToList();
+        Assert.True(missing.Count == 0,
+            $"the proxy sweep reports under {missing.Count} key(s) the catalogue does not have: "
+            + string.Join(", ", missing));
+    }
+
     [Fact]
     public void NothingIsLeftUntranslatedByAccident()
     {

@@ -30,6 +30,10 @@ public sealed record InterceptionConsentRequest(
         expires in 12 hours, is removed when the session stops, and is removed again on
         the next launch if this run does not finish.
 
+        The proxy setting does not expire, so it is written down before it is changed and
+        put back on the next launch even if this run is killed outright — which is the
+        expected outcome when the thing being recorded fights back.
+
         Do this on a machine you can afford to have in this state — ideally a disposable
         VM, not the computer you bank on.
 
@@ -147,6 +151,18 @@ public sealed class ProxyCollector : ICollector
 
         if (_options.ConfigureSystemProxy)
         {
+            // On disk before anything is touched. A subject that kills this process takes
+            // the in-memory backup with it, and the machine is left pointing at a port
+            // nobody is listening on — which breaks every HTTP client on it, with an error
+            // that names no cause. Written first so a crash in the gap leaves a record of
+            // values that are still current, which is a harmless thing to put back.
+            if (!ProxyRestorePoint.Capture(_proxy.Port, winHttpWillBeApplied: true).Save())
+            {
+                context.Store.LogQuality(Name, "warning",
+                    "could not write the proxy restore point, so an abnormal exit would leave "
+                    + "the machine's proxy settings pointing at this session");
+            }
+
             _backup = ApplySystemProxy(_proxy.Port);
 
             // The other half. WinHTTP has its own machine-wide configuration, separate
@@ -212,12 +228,18 @@ public sealed class ProxyCollector : ICollector
         // Put WinHTTP back whether or not reading it succeeded. Leaving the machine
         // pointed at a proxy that no longer exists breaks every service that uses it,
         // and that failure would appear long after the session ended.
-        if (_winHttpApplied && !WinHttpProxy.Restore(_winHttpBackup))
+        bool winHttpRestored = !_winHttpApplied || WinHttpProxy.Restore(_winHttpBackup);
+        if (!winHttpRestored)
         {
             _ctx.ReportFault(Name,
                 "could not restore the machine-wide WinHTTP proxy. Run "
                 + "'netsh winhttp reset proxy' from an elevated prompt.");
         }
+
+        // Only once the machine really is back. Dropping the record while something is
+        // still pointing at this session would delete the one thing the next launch needs
+        // in order to finish the job.
+        if (_backup is not null && winHttpRestored) ProxyRestorePoint.Discard();
 
         if (_authority is { IsInstalled: true })
         {

@@ -491,7 +491,12 @@
     "network.body_not_exported": "Contents were not carried into this report. Export at full depth to include them.",
     "network.peer_unknown": "on this machine, other end not identified",
     "network.loopback_no_contents": "Recorded through Winsock, which is the only thing that sees traffic between two processes on this machine. It reports who talked to whom and how much, but not what was said: the bytes are only ever a pointer into the sending program.",
-    "chat.q.tree": "Show me what started what."
+    "chat.q.tree": "Show me what started what.",
+    "proxy.sweep.wininet_restored": "Put the system proxy back the way an interrupted CaYaTrace session found it.",
+    "proxy.sweep.winhttp_restored": "Put the machine-wide WinHTTP proxy back the way an interrupted CaYaTrace session found it.",
+    "proxy.sweep.winhttp_needs_admin": "An interrupted CaYaTrace session left the machine-wide WinHTTP proxy pointing at a port that is no longer listening. Services, installers and updaters will fail to reach the network until it is put back, and doing that needs administrator rights. Run CaYaTrace as administrator, or from an elevated prompt run:  netsh winhttp reset proxy",
+    "proxy.sweep.ca_removed": "Removed a temporary certificate authority left in this machine's trusted roots by an interrupted CaYaTrace session.",
+    "proxy.sweep.ca_needs_admin": "A temporary CaYaTrace certificate authority is still trusted by this machine and could not be removed without administrator rights. While it is trusted, anything running as you can impersonate any website. It expires on its own within 12 hours of being created; to clear it now, run CaYaTrace as administrator."
   },
   "tr": {
     "app.title": "CaYaTrace",
@@ -973,6 +978,11 @@
     "network.body_not_exported": "İçerik bu rapora taşınmadı. Dahil etmek için tam derinlikte dışa aktarın.",
     "network.peer_unknown": "bu makinede, diğer uç belirlenemedi",
     "network.loopback_no_contents": "Winsock üzerinden kaydedildi; bu makinedeki iki süreç arasındaki trafiği gören tek kaynak odur. Kimin kiminle ve ne kadar konuştuğunu bildirir, ne konuşulduğunu değil: baytlar yalnızca gönderen programın belleğine bir işaretçi olarak geçer.",
-    "chat.q.tree": "Neyin neyi başlattığını göster."
+    "chat.q.tree": "Neyin neyi başlattığını göster.",
+    "proxy.sweep.wininet_restored": "Yarıda kalan bir CaYaTrace oturumunun değiştirdiği sistem ara sunucu ayarı eski haline getirildi.",
+    "proxy.sweep.winhttp_restored": "Yarıda kalan bir CaYaTrace oturumunun değiştirdiği makine genelindeki WinHTTP ara sunucu ayarı eski haline getirildi.",
+    "proxy.sweep.winhttp_needs_admin": "Yarıda kalan bir CaYaTrace oturumu, makine genelindeki WinHTTP ara sunucusunu artık dinlenmeyen bir bağlantı noktasına yönlendirilmiş bırakmış. Bu geri alınana kadar hizmetler, kurulum programları ve güncelleyiciler ağa erişemez; geri almak da yönetici yetkisi ister. CaYaTrace'i yönetici olarak çalıştırın veya yükseltilmiş bir komut isteminde şunu çalıştırın:  netsh winhttp reset proxy",
+    "proxy.sweep.ca_removed": "Yarıda kalan bir CaYaTrace oturumunun bu makinenin güvenilir köklerinde bıraktığı geçici sertifika yetkilisi kaldırıldı.",
+    "proxy.sweep.ca_needs_admin": "Geçici bir CaYaTrace sertifika yetkilisi bu makine tarafından hâlâ güveniliyor ve yönetici yetkisi olmadan kaldırılamadı. Güvenildiği sürece sizin yetkinizle çalışan herhangi bir program kendini herhangi bir web sitesi gibi gösterebilir. Oluşturulmasından itibaren 12 saat içinde kendiliğinden geçersiz olur; şimdi temizlemek için CaYaTrace'i yönetici olarak çalıştırın."
   }
 }

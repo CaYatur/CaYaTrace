@@ -213,6 +213,34 @@ public sealed class SessionCertificateAuthority : IDisposable
     }
 
     /// <summary>
+    /// Thumbprints of any CaYaTrace authority currently trusted by this machine.
+    /// </summary>
+    /// <remarks>
+    /// Read-only, and separate from removal for exactly that reason: opening the machine
+    /// root store for writing needs administrator rights, so a user-level launch that
+    /// called <see cref="RemoveAllStale"/> alone would find nothing and report nothing,
+    /// while the certificate sat there trusted. Reading needs no rights, so a launch that
+    /// cannot fix this can still say so.
+    /// </remarks>
+    public static List<string> FindStale()
+    {
+        try
+        {
+            using var store = new X509Store(StoreName.Root, StoreLocation.LocalMachine);
+            store.Open(OpenFlags.ReadOnly);
+
+            return store.Certificates
+                .Where(static c => c.Subject.Contains(SubjectMarker, StringComparison.OrdinalIgnoreCase))
+                .Select(static c => c.Thumbprint)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is CryptographicException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return new List<string>();
+        }
+    }
+
+    /// <summary>
     /// Removes any CaYaTrace authority found in the machine root store.
     /// </summary>
     /// <remarks>

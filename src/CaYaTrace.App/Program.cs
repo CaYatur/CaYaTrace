@@ -1,5 +1,6 @@
 using CaYaTrace.App.Cli;
 using CaYaTrace.App.Modes;
+using CaYaTrace.Collectors.Proxy;
 
 namespace CaYaTrace.App;
 
@@ -55,6 +56,12 @@ public static class Program
             UserSettings settings = UserSettings.Load();
             Strings.Language = Strings.Resolve(parsed.Get("lang"), settings.Language);
 
+            // Before anything else this launch was asked to do. An earlier run that was
+            // killed mid-session can leave the machine pointing at a proxy that no longer
+            // exists, and a machine in that state cannot reach the network at all — so
+            // repairing it comes before the work, not after it.
+            SweepMachineChanges();
+
             return parsed.Verb switch
             {
                 "trace" => TraceCommand.Run(parsed),
@@ -78,6 +85,66 @@ public static class Program
         {
             Console.Error.WriteLine($"cayatrace: unhandled error: {ex.GetType().Name}: {ex.Message}");
             return 1;
+        }
+    }
+
+    /// <summary>
+    /// Undoes any machine change an earlier run was killed before undoing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two changes can outlive a session: a trusted root, which expires by itself within
+    /// twelve hours, and the system proxy configuration, which does not expire at all. The
+    /// second is the dangerous one. A machine left pointing at a dead loopback port loses
+    /// every HTTP client on it — browsers, updaters, installers — and fails with errors
+    /// that name no cause, so nobody has any reason to suspect a forensics tool they ran
+    /// last week.
+    /// </para>
+    /// <para>
+    /// Deliberately unconditional. This used to live inside the proxy collector, which
+    /// meant the promise the consent dialog makes — <em>removed again on the next launch</em>
+    /// — was only kept for an operator who happened to switch interception on a second
+    /// time. Anyone who ran it once, was bitten, and never touched the feature again was
+    /// exactly the person it never reached.
+    /// </para>
+    /// <para>
+    /// Nothing here is allowed to stop the launch. A tool that refuses to start because it
+    /// could not tidy up after itself is worse than one that says so and carries on.
+    /// </para>
+    /// </remarks>
+    private static void SweepMachineChanges()
+    {
+        ProxyRestorePoint.SweepResult result;
+
+        try
+        {
+            result = ProxyRestorePoint.Sweep();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"cayatrace: could not check for leftover machine changes: {ex.Message}");
+            return;
+        }
+
+        if (!result.DidAnything && !result.NeedsAttention) return;
+
+        var lines = result.MessageKeys().Select(Strings.T).ToList();
+        foreach (string line in lines) Console.Error.WriteLine($"cayatrace: {line}");
+
+        // A GUI launch has no console to read, and the two things this can report — the
+        // machine cannot reach the network, or a certificate authority is still trusted —
+        // are both too serious to leave in a stream nobody is looking at.
+        if (result.NeedsAttention)
+        {
+            try
+            {
+                MessageBox.Show(
+                    string.Join("\n\n", lines), "CaYaTrace",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+            }
         }
     }
 

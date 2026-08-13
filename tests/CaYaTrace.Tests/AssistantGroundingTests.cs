@@ -65,21 +65,31 @@ public sealed class AssistantGroundingTests
     }
 
     /// <summary>
-    /// Narrowing that matches nothing leaves the answer alone.
+    /// A name the session never saw is answered with "no", not with everything else.
     /// </summary>
     /// <remarks>
-    /// The operator asked about a topic the session has rows for. Returning "0 host(s)"
-    /// because the entity matcher was too strict would be the tool hiding evidence it
-    /// holds; the full answer is a worse answer than the narrow one and a far better one
-    /// than nothing.
+    /// Both of the obvious alternatives are wrong. Listing the other twenty-nine hosts
+    /// does not answer the question that was asked, and returning an empty result reads as
+    /// though the session recorded no network activity at all. The rows stay as context
+    /// under an answer that says the name is not among them.
     /// </remarks>
     [Fact]
-    public void ANarrowingThatMatchesNothingKeepsTheAnswer()
+    public void ANameTheSessionNeverSawIsAnsweredAsAbsent()
     {
         var vocabulary = new SessionVocabulary();
-        QuestionEntities entities = vocabulary.Extract("did anything reach example.invalid");
+        QuestionEntities entities = vocabulary.Extract("did anything reach updates.badhost.example");
 
-        Assert.Equal(5, SessionQuestions.Narrow(FiveHosts(), entities).MatchCount);
+        SessionAnswer narrowed = SessionQuestions.Narrow(FiveHosts(), entities);
+
+        Assert.Contains("updates.badhost.example", narrowed.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Nothing here matches", narrowed.Text, StringComparison.Ordinal);
+
+        // The evidence stays, so the operator can see what the session does hold.
+        Assert.Equal(5, narrowed.Evidence.Count);
+
+        // But the model is told the answer, not the rows — given the rows it answers
+        // about them instead, which is the confusion this exists to prevent.
+        Assert.DoesNotContain("msftncsi", narrowed.Facts, StringComparison.Ordinal);
     }
 
     [Fact]

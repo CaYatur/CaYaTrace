@@ -402,7 +402,10 @@ public sealed class SessionAssistant
         {
             FollowUpIntent.Rank =>
                 $"Answer in {languageName}: of the entries below, which matter most and why. "
-                + "Put them in order, most serious first.",
+                + "Put them in order, most serious first. Order them by the severity the facts "
+                + "state. If the facts carry no severity, say plainly that the tool did not rank "
+                + "these and that nothing in them stands out on its own — do NOT call an entry "
+                + "suspicious to have something to say.",
             FollowUpIntent.Explain =>
                 $"Answer in {languageName}: say what the thing below appears to be and what it is "
                 + "for, based on its name, its location and what it does.",
@@ -422,7 +425,15 @@ public sealed class SessionAssistant
         prompt.AppendLine(detail == AnswerDetail.Detailed
             ? "- Then explain what each entry is and why it matters. Stay under 220 words."
             : "- Then at most two short sentences. Stay under 70 words.");
+        prompt.AppendLine($"- Write in {languageName}, even though the facts below are in English.");
         prompt.AppendLine("- Every fact about this machine must come from the facts below. Do not invent paths, names, numbers or events.");
+
+        // The one judgement a small model reaches for unprompted, and the one it is worst
+        // at. Asked which of a list was suspicious, it answered "all of them" — including
+        // Windows' own connectivity checks — because being asked implied there was an
+        // answer. Calling something suspicious is a verdict, and the verdicts are the
+        // tool's.
+        prompt.AppendLine("- Never call something suspicious, malicious or dangerous unless the facts below say so. \"Nothing here stands out\" is a complete answer.");
         prompt.AppendLine("- You MAY compare, rank and say what something resembles. Mark that clearly as your reading, with words like \"looks like\" or \"probably\".");
         prompt.AppendLine("- If the facts do not answer the question, say exactly that and stop.");
         prompt.AppendLine("- Keep file paths, registry keys, service names and commands exactly as written.");
@@ -449,6 +460,16 @@ public sealed class SessionAssistant
         {
             prompt.AppendLine();
             prompt.AppendLine("Facts:");
+
+            // Stated as a fact rather than as a rule, because that is what a small model
+            // actually follows. Told "do not call anything suspicious unless the facts say
+            // so", qwen2.5-coder:7b answered that example.com was among the suspicious
+            // connections anyway — asked to rank, it produced a ranking. Given a line
+            // saying the tool assigned no severity, it has something true to say instead,
+            // and restating a fact is the one thing it is reliably good at.
+            if (followUp == FollowUpIntent.Rank && !CarriesSeverity(answer.Facts))
+                prompt.AppendLine("CaYaTrace assigned no severity to any of these. None of them is marked suspicious.");
+
             prompt.AppendLine(Truncate(answer.Facts, 4000));
         }
 
@@ -494,6 +515,21 @@ public sealed class SessionAssistant
         "Give me the PowerShell to remove WinDelay.",
         "Summarise this session.",
     };
+
+    /// <summary>
+    /// True when the rows carry the tool's own severity, so a ranking has something to
+    /// rank by.
+    /// </summary>
+    /// <remarks>
+    /// The scored answers — files, persistence, findings — render a risk level at the start
+    /// of each row. A list of hosts or processes carries none, and that absence is what a
+    /// ranking question has to be told about rather than left to infer.
+    /// </remarks>
+    private static bool CarriesSeverity(string facts) =>
+        facts.Contains("Critical", StringComparison.Ordinal)
+        || facts.Contains("High", StringComparison.Ordinal)
+        || facts.Contains("Medium", StringComparison.Ordinal)
+        || facts.Contains("Low", StringComparison.Ordinal);
 
     private static string Truncate(string text, int max)
         => text.Length <= max ? text : text[..max] + "\n… (truncated)";

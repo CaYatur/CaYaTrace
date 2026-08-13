@@ -263,6 +263,31 @@ public sealed class SessionQuestions
     public SessionAnswer Answer(string question, AnswerDetail detail)
         => Answer(Classify(question), detail);
 
+    /// <summary>
+    /// Whether activity by this process belongs in the answers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A recording with no subject is a recording of the whole machine, so everything
+    /// counts. A recording of one program answers about that program and everything it
+    /// started.
+    /// </para>
+    /// <para>
+    /// Unattributed activity is kept either way. It is the only category where excluding
+    /// costs evidence that cannot be recovered — an event nobody could tie to a process is
+    /// still an event that happened, and dropping it silently would make a session look
+    /// quieter than it was.
+    /// </para>
+    /// </remarks>
+    private bool InScope(ProcessKey owner)
+    {
+        if (_session.RootProcess == ProcessKey.None) return true;
+        if (owner == ProcessKey.None) return true;
+
+        ProcessNode? node = _processes.FirstOrDefault(p => p.Key == owner);
+        return node is null || node.InScope;
+    }
+
     private SessionVocabulary? _vocabulary;
 
     /// <summary>
@@ -340,11 +365,11 @@ public sealed class SessionQuestions
     /// question that was asked.
     /// </para>
     /// <para>
-    /// A narrowing that matches nothing is left alone rather than returned empty. The
-    /// operator asked about something and the session has rows about that topic; handing
-    /// back "0 host(s)" because the entity matcher was too strict would be the tool losing
-    /// evidence it holds. Instead the full answer stands, and the count says how much of it
-    /// was relevant.
+    /// When nothing matches, the answer says so and keeps the rest as context rather than
+    /// either returning empty or pretending the question was about the topic. "Did anything
+    /// reach example.com" answered with twenty-nine other hosts is not an answer; neither is
+    /// "0 host(s)", which reads as though the session recorded no network activity at all.
+    /// The honest reply is that this name does not appear, and here is what does.
     /// </para>
     /// </remarks>
     public static SessionAnswer Narrow(SessionAnswer answer, QuestionEntities entities)
@@ -358,9 +383,24 @@ public sealed class SessionQuestions
             .Where(row => names.Any(n => row.Contains(n, StringComparison.OrdinalIgnoreCase)))
             .ToList();
 
-        if (kept.Count == 0 || kept.Count == answer.Evidence.Count) return answer;
+        if (kept.Count == answer.Evidence.Count) return answer;
 
         string subject = string.Join(", ", names.Take(3));
+
+        if (kept.Count == 0)
+        {
+            return answer with
+            {
+                Text = $"Nothing here matches {subject}. "
+                     + $"The session does hold {answer.MatchCount} other entr(ies) for this question, "
+                     + "listed below.",
+
+                // The facts handed to a model are the negative answer, not the rows — a
+                // small model given the rows will happily answer about them instead, which
+                // is precisely the confusion this branch exists to prevent.
+                Facts = $"nothing matching {subject} was recorded",
+            };
+        }
 
         return answer with
         {
@@ -494,6 +534,12 @@ public sealed class SessionQuestions
             string name = flow.ResolvedHost ?? flow.ServerName ?? flow.Key.RemoteAddress.ToString();
             if (flow.Key.RemoteAddress.Equals(System.Net.IPAddress.Loopback)) continue;
 
+            // A session recorded to watch one program answers about that program. Without
+            // this, asking a scoped recording which hosts were contacted returned the
+            // operator's own browser, their remote-support agent and their editor's API
+            // traffic — measured, from a session whose subject was a PowerShell script.
+            if (!InScope(flow.Owner)) continue;
+
             string process = _processes.FirstOrDefault(p => p.Key == flow.Owner)?.ImageName ?? "unattributed";
             hosts[name] = hosts.TryGetValue(name, out (int Count, string Process) prior)
                 ? (prior.Count + 1, prior.Process)
@@ -504,7 +550,28 @@ public sealed class SessionQuestions
         {
             if (o.Action != EventAction.DnsQuery) continue;
             if (o.Target.Length == 0) continue;
+            if (!InScope(o.Actor)) continue;
             hosts.TryAdd(o.Target, (0, _processes.FirstOrDefault(p => p.Key == o.Actor)?.ImageName ?? "unattributed"));
+        }
+
+        // With interception on, the subject's own sockets all go to the proxy on loopback
+        // and its real destinations are only in the exchange records. Without this, turning
+        // interception on made "which hosts did it connect to" answer "nothing" — the one
+        // setting whose entire purpose is to see that traffic better.
+        foreach (Observation o in _store.Query(new ObservationQuery
+        {
+            Categories = new List<EventCategory> { EventCategory.Http },
+        }))
+        {
+            if (o.Action != EventAction.HttpRequest) continue;
+            if (!InScope(o.Actor)) continue;
+            if (!Uri.TryCreate(o.Target, UriKind.Absolute, out Uri? url)) continue;
+
+            string process = _processes.FirstOrDefault(p => p.Key == o.Actor)?.ImageName ?? "unattributed";
+
+            hosts[url.Host] = hosts.TryGetValue(url.Host, out (int Count, string Process) prior)
+                ? (prior.Count + 1, prior.Process)
+                : (1, process);
         }
 
         if (hosts.Count == 0)

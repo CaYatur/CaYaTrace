@@ -110,6 +110,13 @@ public sealed class AssistantConversation
         {
             "powershell", "command line", "one line", "one-line", "single line", "cmd",
             "script", "komut", "tek satır", "tek bir satır", "terminal",
+
+            // "How do I remove this" is a request for the command, not for a topic. It
+            // used to route as an ordinary question and come back as a list, which is what
+            // left a language model free to invent removal steps for all of it.
+            "how do i remove", "how do i delete", "how do i stop", "how can i remove",
+            "how to remove", "how to delete",
+            "nasıl kaldır", "nasıl sil", "nasıl temizle", "nasıl durdur", "nasıl sonlandır",
         }),
         (FollowUpIntent.Rank, new[]
         {
@@ -117,6 +124,12 @@ public sealed class AssistantConversation
             "rank", "worst", "priority", "riskiest",
             "hangisi daha", "en kritik", "en önemli", "en tehlikeli", "en riskli", "öncelik",
             "hangisi önce",
+
+            // Asking which of these is suspicious is asking for a judgement, and it used
+            // to be answered by repeating the list — so every entry, including Windows'
+            // own connectivity checks, came back described as suspicious.
+            "suspicious", "malicious", "dangerous", "which ones matter", "worth worrying",
+            "şüpheli", "şühpeli", "zararlı", "kötü amaçlı", "tehlikeli", "riskli",
         }),
         (FollowUpIntent.Narrow, new[]
         {

@@ -83,6 +83,9 @@ public sealed class InterceptingProxy : IAsyncDisposable
     /// <summary>Connections that stayed encrypted, typically because of pinning.</summary>
     public long OpaqueConnections => Interlocked.Read(ref _opaque);
 
+    /// <summary>Exchanges seen but not kept, because they were another program's.</summary>
+    public long OtherProcessExchanges => Interlocked.Read(ref _otherProcesses);
+
     public void Start()
     {
         _listener = new TcpListener(IPAddress.Loopback, _options.Port);
@@ -111,7 +114,16 @@ public sealed class InterceptingProxy : IAsyncDisposable
             _ = Task.Run(async () =>
             {
                 try { await HandleAsync(client).ConfigureAwait(false); }
-                catch (Exception) { /* a broken connection is ordinary, not a fault */ }
+                catch (Exception ex)
+                {
+                    // A client that hangs up early is ordinary. Anything else is the proxy
+                    // failing, and swallowing it silently is how this feature came to be
+                    // completely non-functional while reporting nothing at all: every
+                    // HTTPS connection died here and the session showed zero exchanges,
+                    // zero failures, and no explanation.
+                    if (ex is not (IOException or ObjectDisposedException or OperationCanceledException))
+                        NoteConnectionFault(ex);
+                }
                 finally { client.Dispose(); }
             });
         }
@@ -124,6 +136,24 @@ public sealed class InterceptingProxy : IAsyncDisposable
         ushort clientPort = (ushort)((IPEndPoint)client.Client.RemoteEndPoint!).Port;
         Core.Correlation.FlowAttribution attribution =
             _ctx.Flows.AttributeProxyClient(clientPort, DateTimeOffset.UtcNow);
+
+        // The flow table only knows ports it happened to observe. Windows knows all of
+        // them, and the connection is established right now, so it has an answer — which
+        // matters twice over: an unattributed exchange cannot be tied to a program, and
+        // it cannot be excluded from a session recorded to watch one either.
+        if (attribution.Owner == ProcessKey.None)
+        {
+            uint pid = Network.LocalPortOwner.Resolve(clientPort);
+            if (pid != 0)
+            {
+                ProcessKey owner = _ctx.Processes.Resolve(pid, DateTimeOffset.UtcNow);
+                if (owner != ProcessKey.None)
+                {
+                    attribution = new Core.Correlation.FlowAttribution(
+                        owner, AttributionConfidence.Probable, "local-port-table");
+                }
+            }
+        }
 
         NetworkStream network = client.GetStream();
         var reader = new HttpMessageReader(network);
@@ -194,13 +224,20 @@ public sealed class InterceptingProxy : IAsyncDisposable
                 EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
             }, _shutdown.Token).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is AuthenticationException or IOException)
+        catch (Exception ex)
         {
-            // The client refused our certificate. Pinning, a private trust store, or a
-            // client that simply does not trust machine roots. Recorded rather than
-            // dropped: "this connection could not be read" is itself a finding.
+            // The handshake did not happen, for any reason. Recorded rather than dropped:
+            // "this connection could not be read" is itself a finding.
+            //
+            // Deliberately catching everything. This used to catch only
+            // AuthenticationException and IOException, and the failure that actually
+            // occurred — Schannel refusing an ephemeral server key, a Win32Exception —
+            // fell straight through it. The connection died, the client reported a closed
+            // socket, and the session reported zero exchanges *and* zero failures, which
+            // is the worst possible combination: a feature that is off, reporting nothing
+            // wrong.
             Interlocked.Increment(ref _opaque);
-            RecordOpaque(host, port, attribution, ex.GetType().Name);
+            RecordOpaque(host, port, attribution, $"{ex.GetType().Name}: {ex.Message}");
             clientTls.Dispose();
             return;
         }
@@ -314,6 +351,22 @@ public sealed class InterceptingProxy : IAsyncDisposable
         EventAction action, Core.Correlation.FlowAttribution attribution, string verbOrStatus,
         string url, Dictionary<string, string> headers, byte[] body, long causedBy)
     {
+        // Traffic belonging to somebody else is not recorded when there is a subject.
+        //
+        // The system proxy is machine-wide by construction, so with interception on, every
+        // program's requests arrive here — measured, and the first real test of this
+        // feature captured the operator's own browser and editor traffic, bodies included,
+        // into a file on their disk. A session recorded to watch one program should
+        // contain one program.
+        //
+        // Counted rather than silently dropped, so the report can say the proxy saw more
+        // than it kept.
+        if (!IsSubjects(attribution))
+        {
+            Interlocked.Increment(ref _otherProcesses);
+            return 0;
+        }
+
         Interlocked.Increment(ref _exchanges);
 
         string? bodyReference = null;
@@ -349,6 +402,55 @@ public sealed class InterceptingProxy : IAsyncDisposable
 
         return seq;
     }
+
+    /// <summary>
+    /// Reports a connection the proxy could not handle, once per distinct reason.
+    /// </summary>
+    /// <remarks>
+    /// Once per reason rather than per connection: a proxy that is broken is broken for
+    /// every connection, and a hundred identical lines in the data-quality log would bury
+    /// the one that explains it.
+    /// </remarks>
+    /// <summary>
+    /// True when this exchange belongs to the program under investigation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A system-wide recording has no subject, so everything is the subject and nothing is
+    /// filtered. A recording of one program keeps that program's traffic and the traffic of
+    /// anything it started.
+    /// </para>
+    /// <para>
+    /// An exchange that could not be attributed is kept. The proxy sees only a loopback
+    /// socket, and the port-ownership table it resolves against can miss a short-lived
+    /// connection — dropping those would quietly lose the subject's own traffic to a
+    /// timing race, which is a worse failure than keeping a little extra.
+    /// </para>
+    /// </remarks>
+    private bool IsSubjects(Core.Correlation.FlowAttribution attribution)
+    {
+        if (_ctx.Session.RootProcess == ProcessKey.None) return true;
+        if (attribution.Owner == ProcessKey.None) return true;
+
+        ProcessNode? node = _ctx.Processes.Get(attribution.Owner);
+        return node is null || node.InScope;
+    }
+
+    private long _otherProcesses;
+
+    private void NoteConnectionFault(Exception ex)
+    {
+        // Keyed on the exception type, not the message: messages carry timestamps and
+        // hostnames, so keying on them turns "one thing is broken" into one line per
+        // connection — which is what buries the explanation it was written to surface.
+        if (!_faults.TryAdd(ex.GetType().Name, 0)) { _faults[ex.GetType().Name]++; return; }
+
+        _ctx.Store.LogQuality("https-proxy", "warning",
+            $"a connection could not be handled — {ex.GetType().Name}: {ex.Message}. "
+            + "Traffic on those connections was not recorded.");
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _faults = new();
 
     private void RecordOpaque(string host, int port, Core.Correlation.FlowAttribution attribution, string reason)
     {

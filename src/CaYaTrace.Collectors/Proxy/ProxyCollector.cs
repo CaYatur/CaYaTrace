@@ -80,6 +80,10 @@ public sealed class ProxyCollector : ICollector
     private InterceptingProxy? _proxy;
     private ProxySettingsBackup? _backup;
 
+    /// <summary>The machine-wide WinHTTP configuration as it was before this session.</summary>
+    private WinHttpProxy.Backup? _winHttpBackup;
+    private bool _winHttpApplied;
+
     public ProxyCollector(Func<InterceptionConsentRequest, bool> consent, ProxyCollectorOptions? options = null)
     {
         _consent = consent;
@@ -141,7 +145,28 @@ public sealed class ProxyCollector : ICollector
         string exported = _authority.ExportPublicCertificate(
             Path.Combine(context.SessionDirectory, "proxy"));
 
-        if (_options.ConfigureSystemProxy) _backup = ApplySystemProxy(_proxy.Port);
+        if (_options.ConfigureSystemProxy)
+        {
+            _backup = ApplySystemProxy(_proxy.Port);
+
+            // The other half. WinHTTP has its own machine-wide configuration, separate
+            // from the per-user one above, and it is the one services, installers and
+            // updaters read — which is most of what this tool is pointed at.
+            _winHttpBackup = WinHttpProxy.Read();
+            _winHttpApplied = WinHttpProxy.Apply(_proxy.Port);
+            if (!_winHttpApplied)
+            {
+                context.Store.LogQuality(Name, "warning",
+                    "the machine-wide WinHTTP proxy could not be set, so services and "
+                    + "installers that use it will not be intercepted");
+            }
+            else
+            {
+                context.Store.LogQuality(Name, "info",
+                    $"WinHTTP proxy pointed at 127.0.0.1:{_proxy.Port}, "
+                    + $"previously {WinHttpProxy.Describe(_winHttpBackup)}");
+            }
+        }
 
         context.Emit(new Observation
         {
@@ -169,9 +194,30 @@ public sealed class ProxyCollector : ICollector
             _ctx.Store.LogQuality(Name, "info",
                 $"{_proxy.Exchanges:N0} HTTP exchanges recorded, " +
                 $"{_proxy.OpaqueConnections:N0} connections stayed encrypted (pinning or a private trust store)");
+
+            // Said out loud. The proxy is machine-wide while the session is not, so the
+            // difference between what it saw and what it kept is a real number and the
+            // operator should know it exists rather than wonder why a busy machine
+            // produced a short list.
+            if (_proxy.OtherProcessExchanges > 0)
+            {
+                _ctx.Store.LogQuality(Name, "info",
+                    $"{_proxy.OtherProcessExchanges:N0} exchanges belonged to other programs on this "
+                    + "machine and were not recorded. Record system-wide to keep them.");
+            }
         }
 
         if (_backup is not null) RestoreSystemProxy(_backup);
+
+        // Put WinHTTP back whether or not reading it succeeded. Leaving the machine
+        // pointed at a proxy that no longer exists breaks every service that uses it,
+        // and that failure would appear long after the session ended.
+        if (_winHttpApplied && !WinHttpProxy.Restore(_winHttpBackup))
+        {
+            _ctx.ReportFault(Name,
+                "could not restore the machine-wide WinHTTP proxy. Run "
+                + "'netsh winhttp reset proxy' from an elevated prompt.");
+        }
 
         if (_authority is { IsInstalled: true })
         {
@@ -231,6 +277,13 @@ public sealed class ProxyCollector : ICollector
             key.SetValue("ProxyServer", $"127.0.0.1:{port}", RegistryValueKind.String);
             key.SetValue("ProxyOverride", "<local>", RegistryValueKind.String);
 
+            // Writing the registry is not enough on its own, and this is where the whole
+            // feature was silently failing: WinINet caches proxy configuration and only
+            // re-reads it when told to. Measured — a subject launched with interception
+            // enabled made six TLS handshakes straight past the proxy and the session
+            // recorded zero exchanges.
+            NotifyProxyChanged();
+
             return backup;
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
@@ -239,6 +292,33 @@ public sealed class ProxyCollector : ICollector
             return null;
         }
     }
+
+    /// <summary>
+    /// Tells WinINet its proxy configuration changed.
+    /// </summary>
+    /// <remarks>
+    /// Without this the registry values are correct and nothing reads them: WinINet holds
+    /// its proxy configuration in memory and refreshes on notification, not on a timer.
+    /// Both options are sent because the pair is what the control panel itself sends, and
+    /// sending only one leaves some callers on the stale configuration.
+    /// </remarks>
+    private static void NotifyProxyChanged()
+    {
+        const int InternetOptionSettingsChanged = 39;
+        const int InternetOptionRefresh = 37;
+
+        try
+        {
+            InternetSetOption(IntPtr.Zero, InternetOptionSettingsChanged, IntPtr.Zero, 0);
+            InternetSetOption(IntPtr.Zero, InternetOptionRefresh, IntPtr.Zero, 0);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("wininet.dll", SetLastError = true)]
+    private static extern bool InternetSetOption(IntPtr session, int option, IntPtr buffer, int bufferLength);
 
     private void RestoreSystemProxy(ProxySettingsBackup backup)
     {
@@ -250,6 +330,8 @@ public sealed class ProxyCollector : ICollector
             Restore(key, "ProxyEnable", backup.Enable, RegistryValueKind.DWord);
             Restore(key, "ProxyServer", backup.Server, RegistryValueKind.String);
             Restore(key, "ProxyOverride", backup.Override, RegistryValueKind.String);
+
+            NotifyProxyChanged();
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
         {

@@ -58,6 +58,9 @@ public sealed class SessionCertificateAuthority : IDisposable
 
     public string Thumbprint => _authority.Thumbprint;
 
+    /// <summary>When the authority stops being usable, and the ceiling on every leaf it signs.</summary>
+    public DateTimeOffset NotAfter => _authority.NotAfter.ToUniversalTime();
+
     public bool IsInstalled { get; private set; }
 
     private SessionCertificateAuthority(X509Certificate2 authority) => _authority = authority;
@@ -130,17 +133,40 @@ public sealed class SessionCertificateAuthority : IDisposable
                 subjectAlternativeName.AddDnsName(h);
             request.CertificateExtensions.Add(subjectAlternativeName.Build());
 
+            // A leaf may not outlive the authority that signed it, and it is minted later
+            // than the authority was created — so "now + lifetime" is always past the
+            // authority's own expiry, by however many seconds the session has been
+            // running. That is not an edge case: it made *every* HTTPS connection throw
+            // ArgumentException, from the first one, for the whole life of the feature.
+            // The failure was invisible because the exception was swallowed two frames up.
             DateTimeOffset now = DateTimeOffset.UtcNow;
+            DateTimeOffset expiry = now.Add(Lifetime);
+            DateTimeOffset issuerExpiry = _authority.NotAfter.ToUniversalTime();
+            if (expiry > issuerExpiry) expiry = issuerExpiry;
+
             using X509Certificate2 issued = request.Create(
                 _authority,
                 now.AddMinutes(-5),
-                now.Add(Lifetime),
+                expiry,
                 Guid.NewGuid().ToByteArray());
 
             // SslStream needs the private key attached, which Create does not carry over.
             using X509Certificate2 withKey = issued.CopyWithPrivateKey(key);
+
+            // Deliberately NOT EphemeralKeySet, and this is the whole reason HTTPS
+            // interception recorded nothing at all.
+            //
+            // Schannel — the Windows TLS implementation behind SslStream — cannot use an
+            // ephemeral key as a server credential. It fails with a Win32Exception
+            // ("the credentials supplied to the package were not recognized"), which is
+            // neither AuthenticationException nor IOException, so it escaped the handler
+            // below, killed the connection, and left the session reporting zero exchanges
+            // and zero failures. The subject saw "the underlying connection was closed".
+            //
+            // Without PersistKeySet the key container is removed when this certificate is
+            // disposed, so the machine is not left carrying a key per host visited.
             return new X509Certificate2(
-                withKey.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.EphemeralKeySet);
+                withKey.Export(X509ContentType.Pfx), (string?)null, X509KeyStorageFlags.Exportable);
         });
     }
 

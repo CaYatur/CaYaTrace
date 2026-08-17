@@ -116,6 +116,12 @@ public sealed partial class WorkbenchWindow
             DropOutOfScope = Option("scoped"),
             CapturePackets = Option("packets"),
 
+            // The only way to read what two programs on this machine said to each other.
+            // Off by default because it needs a packet driver this tool does not install,
+            // and because it widens what a recording contains: local conversations from
+            // every process on the machine, not only the subject's.
+            CaptureLoopback = Option("loopback"),
+
             // A callback, not a flag. Ticking the box is not consent; it only makes the
             // question get asked, and the question needs a typed answer because what it
             // installs is a trusted root certificate authority.

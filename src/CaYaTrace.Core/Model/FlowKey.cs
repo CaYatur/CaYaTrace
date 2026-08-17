@@ -49,9 +49,44 @@ public readonly record struct FlowKey(
     /// </summary>
     public FlowKey Canonical()
     {
-        int cmp = CompareEndpoints(LocalAddress, LocalPort, RemoteAddress, RemotePort);
-        return cmp <= 0 ? this : Reversed();
+        FlowKey flat = Unmapped();
+
+        int cmp = CompareEndpoints(flat.LocalAddress, flat.LocalPort, flat.RemoteAddress, flat.RemotePort);
+        return cmp <= 0 ? flat : flat.Reversed();
     }
+
+    /// <summary>
+    /// The same conversation with IPv4-mapped IPv6 addresses written as IPv4.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A socket opened on a dual-stack listener reports its peer as
+    /// <c>::ffff:127.0.0.1</c> while the client reports <c>127.0.0.1</c>. Those are the
+    /// same address, and treating them as different meant one conversation became two
+    /// flows: the bytes split across them, the process attribution landed on one and not
+    /// the other, and the operator saw the same local exchange listed twice under two
+    /// spellings of the same endpoint. Measured on a loopback recording — three rows for
+    /// one conversation, of which this accounted for one.
+    /// </para>
+    /// <para>
+    /// Applied when the key is canonicalised rather than when it is built, because the
+    /// spelling a source used is worth keeping; it is only the identity that has to agree.
+    /// </para>
+    /// </remarks>
+    public FlowKey Unmapped()
+    {
+        IPAddress local = Flatten(LocalAddress);
+        IPAddress remote = Flatten(RemoteAddress);
+
+        return ReferenceEquals(local, LocalAddress) && ReferenceEquals(remote, RemoteAddress)
+            ? this
+            : new FlowKey(Protocol, local, LocalPort, remote, RemotePort);
+    }
+
+    private static IPAddress Flatten(IPAddress address)
+        => address.AddressFamily == AddressFamily.InterNetworkV6 && address.IsIPv4MappedToIPv6
+            ? address.MapToIPv4()
+            : address;
 
     public bool Equals(FlowKey other)
         => Protocol == other.Protocol

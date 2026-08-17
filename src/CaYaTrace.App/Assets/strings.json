@@ -531,7 +531,9 @@
     "outcome.skippedbyoperator": "Kept",
     "outcome.failed": "In the way",
     "outcome.pending": "Waiting",
-    "remediate.caution": "act on this one deliberately"
+    "remediate.caution": "act on this one deliberately",
+    "capture.opt.loopback": "Capture local conversations",
+    "capture.opt.loopback_hint": "What programs on this machine say to each other, with the contents. A connection over 127.0.0.1 never becomes a packet on any adapter, so this is the only way to read one — everything else can say a program sent 4,096 bytes to itself and nothing about what they were. Two caveats: it needs Npcap, the free packet driver Wireshark uses, and it records the whole machine’s local traffic rather than only the subject’s, so a recording made with this on contains more than one made without it."
   },
   "tr": {
     "app.title": "CaYaTrace",
@@ -1053,6 +1055,8 @@
     "outcome.skippedbyoperator": "Bırakıldı",
     "outcome.failed": "Engellendi",
     "outcome.pending": "Bekliyor",
-    "remediate.caution": "bunu bilerek onaylayın"
+    "remediate.caution": "bunu bilerek onaylayın",
+    "capture.opt.loopback": "Yerel konuşmaları yakala",
+    "capture.opt.loopback_hint": "Bu makinedeki programların birbirine ne söylediğini, içeriğiyle birlikte. 127.0.0.1 üzerindeki bir bağlantı hiçbir ağ bağdaştırıcısında pakete dönüşmez; dolayısıyla onu okumanın tek yolu budur — diğer her şey bir programın kendisine 4.096 bayt gönderdiğini söyleyebilir, bu baytların ne olduğunu söyleyemez. İki not: Wireshark’ın kullandığı ücretsiz paket sürücüsü Npcap gerekir ve yalnızca hedefin değil, makinenin tüm yerel trafiği kaydedilir — yani bu açıkken alınan bir kayıt, kapalıyken alınandan fazlasını içerir."
   }
 }

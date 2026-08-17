@@ -99,6 +99,28 @@ internal static class LocalPortOwner
         }
     }
 
+    /// <summary>
+    /// Every local port one process is holding.
+    /// </summary>
+    /// <remarks>
+    /// The reverse of <see cref="Resolve"/>, and read fresh rather than from the cache: the
+    /// caller is deciding what to leave out of a capture, and a stale answer there means
+    /// either keeping noise or discarding evidence.
+    /// </remarks>
+    public static IReadOnlyCollection<ushort> PortsOwnedBy(uint pid)
+    {
+        lock (Gate)
+        {
+            Refresh();
+
+            var ports = new HashSet<ushort>();
+            foreach ((int port, uint owner) in _ports)
+                if (owner == pid && port is > 0 and <= ushort.MaxValue) ports.Add((ushort)port);
+
+            return ports;
+        }
+    }
+
     private static Dictionary<int, uint> Read()
     {
         var result = new Dictionary<int, uint>();

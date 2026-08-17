@@ -254,12 +254,25 @@ public static class SessionProjection
         var result = new List<object>();
         if (!request.Allows(EventCategory.Network)) return result;
 
+        // One exchange, one row.
+        //
+        // Up to three sources now describe the same local conversation: the socket
+        // provider sees the client's socket, sees the accepted socket as a second one, and
+        // the loopback capture sees the exchange between them. All three are true and
+        // listing all three shows the operator one conversation three times — including a
+        // row saying its contents could not be captured, next to a row containing them.
+        //
+        // Kept as evidence, collapsed for reading, and the survivor is the row that
+        // carries the most: contents first, then bytes.
+        var best = new Dictionary<string, (int Rank, long Bytes, object Row)>(StringComparer.Ordinal);
+        var order = new List<string>();
+
         foreach (Observation o in store.Query(new ObservationQuery
                  {
                      Categories = new List<EventCategory> { EventCategory.Network },
                  }))
         {
-            if (result.Count >= request.NetworkRowLimit) break;
+            if (order.Count >= request.NetworkRowLimit) break;
             if (!owned(o.Actor)) continue;
             if (o.Details is not { Length: > 0 } details) continue;
 
@@ -283,7 +296,7 @@ public static class SessionProjection
                 continue;
             }
 
-            result.Add(new
+            object row = new
             {
                 seq = o.Seq,
                 when = o.Timestamp,
@@ -320,10 +333,140 @@ public static class SessionProjection
                 peerProcess = Text(facts, "peerProcess"),
                 contentsUnavailable = Flag(facts, "contentsUnavailable"),
                 via = Text(facts, "via") ?? "packets",
-            });
+            };
+
+            string identity = ConversationIdentity(o, facts);
+            bool hasContent = Text(facts, "sentBody") is not null || Text(facts, "receivedBody") is not null;
+            int rank = hasContent ? 2 : o.Source == EvidenceSource.PacketCapture ? 1 : 0;
+
+            if (best.TryGetValue(identity, out (int Rank, long Bytes, object Row) held))
+            {
+                if (rank > held.Rank || (rank == held.Rank && o.Bytes > held.Bytes))
+                    best[identity] = (rank, o.Bytes, row);
+            }
+            else
+            {
+                best[identity] = (rank, o.Bytes, row);
+                order.Add(identity);
+            }
+        }
+
+        // Where the loopback capture reached, it supersedes the socket provider.
+        //
+        // The socket provider cannot always name the local port of an outgoing socket, so
+        // its record and the capture's record of the same exchange cannot always be matched
+        // by identity — and two rows for one conversation is the thing this is for. What
+        // can be matched is coverage: the loopback capture is system-wide, so if it saw any
+        // conversation on a local port, it saw every conversation on that port. A socket
+        // record for a port the capture covered therefore describes something the capture
+        // already described, in less detail.
+        //
+        // Only for loopback, and only when the capture actually produced something. A
+        // session without it keeps every socket record it ever had.
+        var covered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string identity in order)
+        {
+            (int rank, long _, object row) = best[identity];
+            if (rank < 1) continue;                          // came from the socket provider
+
+            if (Ports(row) is not (string address, long local, long peer, string via, string scope)) continue;
+            if (via != "packets" || scope != "Loopback") continue;
+
+            covered.Add($"{address}|{local}");
+            covered.Add($"{address}|{peer}");
+        }
+
+        foreach (string identity in order)
+        {
+            object row = best[identity].Row;
+
+            if (covered.Count > 0
+                && Ports(row) is (string address, long local, long peer, string via, string scope)
+                && via == "winsock"
+                && scope == "Loopback"
+                && (covered.Contains($"{address}|{local}") || covered.Contains($"{address}|{peer}")))
+            {
+                continue;
+            }
+
+            result.Add(row);
         }
 
         return result;
+    }
+
+    /// <summary>Reads back the few fields the collapse needs from a projected row.</summary>
+    /// <remarks>
+    /// Through reflection because the rows are anonymous objects built for serialisation,
+    /// and giving them a named type purely so this could read four of their properties
+    /// would spread a projection concern across the whole file.
+    /// </remarks>
+    private static (string Address, long Local, long Peer, string Via, string Scope)? Ports(object row)
+    {
+        Type type = row.GetType();
+
+        if (type.GetProperty("peer")?.GetValue(row) is not string peerText) return null;
+
+        (string address, long peerPort) = SplitEndpoint(Fold(peerText));
+
+        long localPort = type.GetProperty("localPort")?.GetValue(row) is long value ? value : 0;
+        string via = type.GetProperty("via")?.GetValue(row) as string ?? string.Empty;
+        string scope = type.GetProperty("scope")?.GetValue(row) as string ?? string.Empty;
+
+        return (address, localPort, peerPort, via, scope);
+    }
+
+    /// <summary>
+    /// What makes two records the same conversation.
+    /// </summary>
+    /// <remarks>
+    /// The unordered pair of endpoints, because the two ends of a local exchange are two
+    /// sockets and one conversation, and whichever end a source happened to be looking
+    /// from should not produce a second row. Addresses are folded to their IPv4 form first:
+    /// a dual-stack listener reports its peer as <c>::ffff:127.0.0.1</c> where the client
+    /// reports <c>127.0.0.1</c>, which is the same machine spelled two ways.
+    /// </remarks>
+    private static string ConversationIdentity(Observation o, JsonElement facts)
+    {
+        string peer = Fold(o.Target);
+        string protocol = Text(facts, "protocol") ?? "?";
+
+        (string address, long peerPort) = SplitEndpoint(peer);
+        long localPort = Number(facts, "localPort");
+
+        // The two ports, unordered, against the peer's address.
+        //
+        // Not "peer endpoint plus local port": the client calls the server's port the peer
+        // and its own the local, and the accepted socket says the exact opposite, so that
+        // key gives the two ends of one conversation two different names. The pair of port
+        // numbers is the same fact from both sides.
+        long low = Math.Min(localPort, peerPort);
+        long high = Math.Max(localPort, peerPort);
+
+        return $"{protocol}|{address}|{low}|{high}";
+    }
+
+    /// <summary>Splits <c>host:port</c> or <c>[host]:port</c> into its parts.</summary>
+    private static (string Address, long Port) SplitEndpoint(string endpoint)
+    {
+        int colon = endpoint.LastIndexOf(':');
+        if (colon <= 0 || colon == endpoint.Length - 1) return (endpoint, 0);
+
+        string address = endpoint[..colon];
+        return long.TryParse(endpoint[(colon + 1)..], out long port) ? (address, port) : (endpoint, 0);
+    }
+
+    /// <summary>Writes an IPv4-mapped IPv6 endpoint the way the IPv4 side writes it.</summary>
+    private static string Fold(string endpoint)
+    {
+        const string Mapped = "[::ffff:";
+
+        if (!endpoint.StartsWith(Mapped, StringComparison.OrdinalIgnoreCase)) return endpoint;
+
+        int close = endpoint.IndexOf(']', Mapped.Length);
+        if (close < 0) return endpoint;
+
+        return endpoint[Mapped.Length..close] + endpoint[(close + 1)..];
     }
 
     /// <summary>

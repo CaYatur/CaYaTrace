@@ -140,6 +140,12 @@ public sealed class CommandLine
                                      converted to pcapng for Wireshark and correlated
                                      back to processes by 5-tuple
               --packet-cap-mb <n>    Circular capture size cap (default 512)
+              --loopback             Capture what programs on this machine say to each
+                                     other, with the contents. A connection over
+                                     127.0.0.1 never becomes a packet on any adapter, so
+                                     nothing else can read one. Needs Npcap, the free
+                                     packet driver Wireshark uses; records the whole
+                                     machine's local traffic, not only the target's
               --intercept-https      Ask to intercept HTTPS. Installs a temporary
                                      certificate authority into the machine's trusted
                                      roots for the length of the session, so request and

@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-dc2626.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-111826.svg)](#requirements)
 [![.NET](https://img.shields.io/badge/.NET-8.0-182438.svg)](#requirements)
-[![Status](https://img.shields.io/badge/status-0.5.5%20preview-b91c1c.svg)](docs/ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-0.5.6%20preview-b91c1c.svg)](docs/ROADMAP.md)
 
 [Türkçe README](README.tr.md) · [Architecture](docs/ARCHITECTURE.md) · [Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md)
 
@@ -57,6 +57,23 @@ Then it turns that recording into a **portable removal package** you can carry t
 that has never run CaYaTrace and clean it there — with every item re-verified against that
 machine before anything is touched.
 
+### Reading what a program says to itself
+
+A program that installs a local helper and then coordinates with it over `127.0.0.1` is
+invisible to ordinary capture. An established loopback connection is handled by a fastpath
+inside the Windows stack and never becomes a packet on any adapter — measured with the
+packet monitor Windows ships, told to capture every component: 5,276 events, not one of them
+loopback. So every tool can tell you that 4,096 bytes went to `127.0.0.1`, and none of them
+can tell you what the bytes were.
+
+Turning on **Capture local conversations** reads them, in both directions, with contents,
+over IPv4 and IPv6 loopback. It needs [Npcap](https://npcap.com) — the free packet driver
+Wireshark uses, whose loopback adapter works through the Windows Filtering Platform and so
+sits above the fastpath. Two things worth knowing before enabling it: the recording then
+contains local traffic from *every* process on the machine rather than only the subject's,
+and Unix-domain sockets, named pipes and loopback TLS are still recorded as sizes or
+ciphertext rather than contents. The session says which of those applied.
+
 ## Why it is built the way it is
 
 - **Correct attribution over more events.** PIDs get recycled; file and registry events carry
@@ -64,12 +81,14 @@ machine before anything is touched.
   [the correlation layer](docs/ARCHITECTURE.md#3-the-correlation-layer-is-the-product).
 - **Honest about what it missed.** ETW drops events silently under load, which makes a session
   look *cleaner* than reality. Every session reports its own data quality.
-- **No kernel driver.** No install, no reboot, no test-signing mode, nothing left behind.
+- **No kernel driver of its own.** No install, no reboot, no test-signing mode, nothing
+  left behind. The one exception is opt-in and somebody else's: reading local
+  conversations needs Npcap's driver, which is why that is a checkbox and not a default.
   [Why, and what it costs.](docs/ARCHITECTURE.md#1-the-constraint-that-shapes-everything-no-kernel-driver)
 - **Removal that cannot brick the machine.** Non-overridable deny list, fingerprint
   verification, quarantine instead of delete, rollback journal, dry run by default.
 
-## Status — 0.5.3 preview
+## Status — 0.5.6 preview
 
 This is an early release. What is real today versus designed is tracked honestly:
 
@@ -88,6 +107,7 @@ This is an early release. What is real today versus designed is tracked honestly
 | CLI (`trace`, `report`, `remediate`, `compare`, `explain`, `agent`) | ✅ working |
 | Workbench UI (WebView2 + CaYaDev theme) | ✅ working |
 | Packet capture via Pktmon, correlated to processes | ✅ working |
+| Loopback capture: what programs on this machine say to each other, with contents (opt-in, needs Npcap) | ✅ working |
 | Intercepting proxy for full request bodies (opt-in) | ✅ working |
 | Multi-VM comparison (`compare`) with measured path templating | ✅ working |
 | Fleet transport: paired, encrypted host ↔ agent channel | ✅ working |
@@ -196,6 +216,8 @@ Run `CaYaTrace help` for every option.
 - Administrator rights for kernel tracing — everything else works unelevated
 - [WebView2 runtime](https://developer.microsoft.com/microsoft-edge/webview2/) for the
   workbench UI (preinstalled on Windows 11; the CLI does not need it)
+- [Npcap](https://npcap.com) only for capturing local conversations. Everything else works
+  without it, and the session says so plainly when it is asked for and missing
 
 ## Building from source
 

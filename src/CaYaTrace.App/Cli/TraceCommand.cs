@@ -47,6 +47,10 @@ public static class TraceCommand
             DropOutOfScope = cmd.Flag("scoped-only"),
             CapturePackets = cmd.Flag("packets"),
 
+            // What programs on this machine said to each other. Needs Npcap; the session
+            // says so plainly when it is missing rather than recording an empty capture.
+            CaptureLoopback = cmd.Flag("loopback"),
+
             // A callback, not a flag. --intercept-https alone is not consent; it only
             // makes the question get asked.
             InterceptionConsent = ResolveInterceptionConsent(cmd),

@@ -7,7 +7,7 @@
 [![Lisans: MIT](https://img.shields.io/badge/Lisans-MIT-dc2626.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-111826.svg)](#gereksinimler)
 [![.NET](https://img.shields.io/badge/.NET-8.0-182438.svg)](#gereksinimler)
-[![Durum](https://img.shields.io/badge/durum-0.5.5%20önizleme-b91c1c.svg)](docs/ROADMAP.md)
+[![Durum](https://img.shields.io/badge/durum-0.5.6%20önizleme-b91c1c.svg)](docs/ROADMAP.md)
 
 [English README](README.md) · [Mimari](docs/ARCHITECTURE.md) · [Güvenlik](SECURITY.md) · [Yol haritası](docs/ROADMAP.md)
 
@@ -58,6 +58,23 @@ Ardından bu kaydı **taşınabilir bir kaldırma paketine** dönüştürür. Bu
 hiç çalışmadığı bir cihaza götürüp orada temizlik yapabilirsiniz — her madde, herhangi bir
 şeye dokunulmadan önce o cihazda yeniden doğrulanır.
 
+### Bir programın kendisiyle konuştuğunu okumak
+
+Yerel bir yardımcı kuran ve sonra onunla `127.0.0.1` üzerinden haberleşen bir program
+sıradan yakalama için görünmezdir. Kurulmuş bir loopback bağlantısı Windows yığınının
+içindeki bir hızlı yol tarafından işlenir ve hiçbir bağdaştırıcıda pakete dönüşmez —
+Windows'un kendi paket monitörüyle, tüm bileşenleri yakalayacak şekilde ölçüldü: 5.276 olay,
+hiçbiri loopback değil. Yani her araç size `127.0.0.1` adresine 4.096 bayt gittiğini
+söyleyebilir, hiçbiri o baytların ne olduğunu söyleyemez.
+
+**Yerel konuşmaları yakala** seçeneği bunları iki yönde de, içerikleriyle, IPv4 ve IPv6
+loopback üzerinde okur. [Npcap](https://npcap.com) gerekir — Wireshark'ın kullandığı
+ücretsiz paket sürücüsü; loopback bağdaştırıcısı Windows Filtreleme Platformu üzerinden
+çalıştığı için hızlı yolun üstünde durur. Açmadan önce bilinmesi gereken iki şey: kayıt
+artık yalnızca hedefin değil, makinedeki *her* sürecin yerel trafiğini içerir; ve
+Unix-domain yuvaları, adlandırılmış kanallar ve loopback TLS hâlâ içerik değil boyut veya
+şifreli metin olarak kaydedilir. Oturum, bunlardan hangisinin geçerli olduğunu söyler.
+
 ## Neden böyle tasarlandı
 
 - **Daha çok olay yerine doğru ilişkilendirme.** PID'ler geri dönüştürülür; dosya ve kayıt
@@ -66,13 +83,14 @@ hiç çalışmadığı bir cihaza götürüp orada temizlik yapabilirsiniz — h
 - **Neyi kaçırdığı konusunda dürüst.** ETW yük altında olayları sessizce düşürür; bu da
   oturumu gerçekte olduğundan *daha temiz* gösterir. Her oturum kendi veri kalitesini
   raporlar.
-- **Çekirdek sürücüsü yok.** Kurulum yok, yeniden başlatma yok, test imzalama modu yok,
-  geride bir şey kalmıyor.
+- **Kendi çekirdek sürücüsü yok.** Kurulum yok, yeniden başlatma yok, test imzalama modu
+  yok, geride bir şey kalmıyor. Tek istisna isteğe bağlıdır ve başkasına aittir: yerel
+  konuşmaları okumak Npcap'in sürücüsünü gerektirir — bu yüzden o bir onay kutusu, varsayılan değil.
   [Nedeni ve bedeli.](docs/ARCHITECTURE.md#1-the-constraint-that-shapes-everything-no-kernel-driver)
 - **Cihazı bozamayacak bir kaldırma.** Geçersiz kılınamayan yasak listesi, parmak izi
   doğrulaması, silme yerine karantina, geri alma günlüğü ve varsayılan olarak prova modu.
 
-## Durum — 0.5.3 önizleme
+## Durum — 0.5.6 önizleme
 
 Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış olan dürüstçe ayrılmıştır:
 
@@ -91,6 +109,7 @@ Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış o
 | Komut satırı (`trace`, `report`, `remediate`, `compare`, `explain`, `agent`) | ✅ çalışıyor |
 | Çalışma tezgâhı arayüzü (WebView2 + CaYaDev teması) | ✅ çalışıyor |
 | Süreçlere ilişkilendirilmiş Pktmon paket yakalama | ✅ çalışıyor |
+| Loopback yakalama: bu makinedeki programların birbirine söyledikleri, içerikleriyle (isteğe bağlı, Npcap gerekir) | ✅ çalışıyor |
 | Tam istek gövdeleri için araya giren proxy (isteğe bağlı) | ✅ çalışıyor |
 | Çoklu VM karşılaştırması (`compare`) ve ölçülmüş yol şablonlama | ✅ çalışıyor |
 | Filo aktarımı: eşleştirilmiş, şifreli host ↔ ajan kanalı | ✅ çalışıyor |

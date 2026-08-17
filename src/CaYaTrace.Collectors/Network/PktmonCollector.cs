@@ -152,155 +152,27 @@ public sealed class PktmonCollector : ICollector
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Flows the kernel provider already knows gain their true wire byte counts;
-    /// conversations it missed appear with whatever attribution the 5-tuple can supply,
-    /// and stay unattributed when it can supply none. Guessing an owner here would
-    /// undo the point of tracking attribution confidence at all.
+    /// The reading itself is shared with the loopback capture, because both arrive as
+    /// pcapng and two copies of it would be two places for the tool to disagree with
+    /// itself about what a conversation is.
     /// </para>
     /// <para>
-    /// The contents are kept, not only the totals. This is the only layer that sees a
-    /// program talking to another machine on the local network or to a second copy of
-    /// itself: the HTTP stacks report what goes through them and the intercepting proxy
-    /// reads what is routed to it, and a program that opens its own socket and speaks its
-    /// own protocol to a peer is invisible to both. That arrangement — components of one
-    /// thing coordinating with each other — is precisely what is worth finding.
+    /// The contents are kept, not only the totals. This is the layer that sees a program
+    /// talking to another machine on the local network: the HTTP stacks report what goes
+    /// through them and the intercepting proxy reads what is routed to it, and a program
+    /// that opens its own socket and speaks its own protocol to a peer is invisible to
+    /// both.
     /// </para>
     /// </remarks>
     private void CorrelateCapture(CollectorContext ctx, string pcapngPath)
     {
-        IReadOnlyList<Conversation> conversations;
-        try
-        {
-            List<IPAddress> local = LocalAddresses();
-            conversations = ConversationRecorder.Read(pcapngPath, local);
-        }
-        catch (Exception ex) when (ex is IOException or EndOfStreamException or InvalidDataException)
-        {
-            ctx.Store.LogQuality(Name, "warning", $"the capture could not be read back: {ex.Message}");
-            return;
-        }
-
-        int attributed = 0;
-        int withContent = 0;
-        int localNetwork = 0;
-
-        foreach (Conversation conversation in conversations)
-        {
-            FlowKey key = conversation.Key;
-            Core.Correlation.FlowAttribution owner = ctx.Flows.Attribute(key, conversation.Last);
-
-            ctx.Flows.NoteBytes(key, conversation.Last, sent: 0, received: 0,
-                packetsSent: conversation.PacketsOut, packetsReceived: conversation.PacketsIn);
-
-            NetworkFlow tracked = ctx.Flows.GetOrCreate(key, conversation.First);
-            if (tracked.BytesSent + tracked.BytesReceived < conversation.BytesOut + conversation.BytesIn)
-            {
-                // The wire totals are authoritative over the kernel provider's, which
-                // counts payload handed to the stack rather than bytes on the link.
-                tracked.BytesSent = conversation.BytesOut;
-                tracked.BytesReceived = conversation.BytesIn;
-            }
-
-            tracked.ServerName ??= conversation.ServerName;
-            if (owner.Owner != ProcessKey.None) attributed++;
-            if (conversation.Scope == PeerScope.LocalNetwork) localNetwork++;
-
-            string? outboundHash = StoreBody(ctx, conversation.Outbound);
-            string? inboundHash = StoreBody(ctx, conversation.Inbound);
-            if (outboundHash is not null || inboundHash is not null) withContent++;
-
-            ctx.Emit(new Observation
-            {
-                Timestamp = conversation.First,
-                Category = EventCategory.Network,
-                Action = conversation.Inbound_Connection ? EventAction.Accept : EventAction.Connect,
-                Actor = owner.Owner,
-                Target = $"{key.RemoteAddress}:{key.RemotePort}",
-                Target2 = conversation.ServerName ?? conversation.Protocol.ToString(),
-                NewValue = conversation.Summary,
-                Bytes = conversation.BytesOut + conversation.BytesIn,
-                Source = EvidenceSource.PacketCapture,
-                Confidence = owner.Confidence,
-                Status = EventStatus.Success,
-
-                // The hashes are how the view finds the bodies. Written as details rather
-                // than as columns because nothing filters on them.
-                Details = System.Text.Json.JsonSerializer.Serialize(new
-                {
-                    scope = conversation.Scope.ToString(),
-                    protocol = conversation.Protocol.ToString(),
-                    localPort = key.LocalPort,
-                    inbound = conversation.Inbound_Connection,
-                    truncated = conversation.Truncated,
-                    sentBody = outboundHash,
-                    receivedBody = inboundHash,
-                    sentBytes = conversation.Outbound.Length,
-                    receivedBytes = conversation.Inbound.Length,
-                    evidence = owner.Evidence,
-                }),
-            });
-        }
+        CaptureCorrelator.Result result = CaptureCorrelator.Correlate(
+            ctx, Name, pcapngPath, EvidenceSource.PacketCapture);
 
         ctx.Store.LogQuality(Name, "info",
-            $"{conversations.Count:N0} conversations recovered from the capture, "
-            + $"{attributed:N0} attributed to a process, {withContent:N0} with readable content, "
-            + $"{localNetwork:N0} on the local network");
-    }
-
-    /// <summary>Stores one direction's bytes, returning the hash that finds them again.</summary>
-    /// <remarks>
-    /// Content-addressed, so two conversations that carried the same bytes are stored
-    /// once — which is common, because the same beacon repeated fifty times is fifty
-    /// identical payloads.
-    /// </remarks>
-    private static string? StoreBody(CollectorContext ctx, byte[] body)
-    {
-        if (body.Length == 0) return null;
-
-        string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(body)).ToLowerInvariant();
-
-        try
-        {
-            ctx.Store.WriteBlob(hash, body, "application/octet-stream");
-            return hash;
-        }
-        catch (Exception ex) when (ex is IOException or Microsoft.Data.Sqlite.SqliteException)
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// This machine's addresses, used to tell an outbound conversation from an inbound one.
-    /// </summary>
-    /// <remarks>
-    /// Which end connected is the difference between "it called out to a server" and
-    /// "something on the network connected to it", and only the second one means the
-    /// program was listening.
-    /// </remarks>
-    private static List<IPAddress> LocalAddresses()
-    {
-        var result = new List<IPAddress> { IPAddress.Loopback, IPAddress.IPv6Loopback };
-
-        try
-        {
-            foreach (System.Net.NetworkInformation.NetworkInterface nic in
-                     System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
-            {
-                foreach (System.Net.NetworkInformation.UnicastIPAddressInformation address in
-                         nic.GetIPProperties().UnicastAddresses)
-                {
-                    result.Add(address.Address);
-                }
-            }
-        }
-        catch (System.Net.NetworkInformation.NetworkInformationException)
-        {
-            // Without the interface list, orientation falls back to the canonical key —
-            // less accurate, still usable.
-        }
-
-        return result;
+            $"{result.Conversations:N0} conversations recovered from the capture, "
+            + $"{result.Attributed:N0} attributed to a process, {result.WithContent:N0} with readable content, "
+            + $"{result.LocalNetwork:N0} on the local network");
     }
 
     private static async Task<(int ExitCode, string Output)> RunAsync(string arguments, CancellationToken cancellationToken)

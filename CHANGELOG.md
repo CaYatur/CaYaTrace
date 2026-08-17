@@ -4,6 +4,75 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.6] — 2026-08-17
+
+### Added
+
+**Loopback capture: what programs on this machine say to each other, with the contents.**
+
+The gap this closes has been open since the first release. An established TCP connection
+over loopback is handled by a fastpath inside the Windows stack and never becomes a packet
+on any adapter — measured twice with the packet monitor Windows ships, told to capture every
+component: 5,276 events and not one of them loopback. So the tool could say that a program
+had opened a connection to `127.0.0.1` and moved 4,096 bytes, and nothing whatsoever about
+what those bytes were. That is the worst possible place to be blind: a program coordinating
+with a local helper it just installed is exactly the arrangement worth reading.
+
+It works through [Npcap](https://npcap.com)'s loopback adapter, which hooks the Windows
+Filtering Platform and therefore sits *above* the decision that makes loopback a fastpath.
+That is the same kernel-callout mechanism this tool would otherwise have had to ship a
+driver of its own to reach — except already written, signed, maintained by somebody else,
+and installed by the package Wireshark uses. The library is called directly rather than
+through a capture program, because Npcap installs `wpcap.dll` and the programs that drive it
+come with Wireshark, which an analysis machine usually does not have.
+
+The output is pcapng, so everything that already turned bytes into a readable conversation —
+reassembly, direction, protocol, contents, the blob store — applies unchanged.
+
+- **Both loopback families.** IPv4 and IPv6, tested separately, because `localhost` resolves
+  to `::1` before `127.0.0.1` on current Windows and a capture that handled only IPv4 would
+  have been missing the common half while looking like a program that never talked.
+- **Oriented by the SYN, not by the address.** On loopback both ends are this machine, so
+  addresses cannot say which end connected. What a program sent and what it received are
+  different columns and must not be swapped.
+- **Off by default, and for stated reasons.** It needs a driver this tool does not install,
+  and it records local traffic from every process on the machine rather than only the
+  subject's — so a recording made with it on contains more than one made without it. The
+  option says both things before it is ticked, and the session repeats them.
+- **Never silently empty.** A missing driver, a missing loopback adapter, a capture that hit
+  its size cap, a session where nothing spoke locally: each says which it was. A capture
+  that quietly produces nothing is indistinguishable from a program that never talked to
+  anything, and an analyst reading the second when the first is true draws the opposite
+  conclusion from the right one.
+- **What it cannot see is named.** Unix-domain sockets and named pipes carry no IP and are
+  recorded by the socket and file providers as sizes without contents; a local conversation
+  inside TLS is recorded as the ciphertext it was. The session says so rather than leaving
+  it as a silence.
+- **Bounded.** A 512 MB cap by default, because local IPC is not a trickle and a session
+  left running on a busy machine would otherwise fill the disk.
+
+Available as **Capture local conversations** in the workbench and `--loopback` on the CLI.
+
+### Fixed
+
+**One local conversation was recorded three times.** Up to three sources now describe the
+same exchange: the socket provider sees the client's socket, sees the accepted socket as a
+second one, and the loopback capture sees the traffic between them. All three are true, and
+listing all three showed the operator one conversation three times — including a row saying
+its contents could not be captured, directly above a row containing them.
+
+Every record is still kept, because provenance is what an evidence file is for. What the
+operator reads is now one row per exchange, and the survivor is the one carrying the most.
+Where the loopback capture ran, it supersedes the socket provider's view: the capture is
+system-wide, so if it saw any conversation on a local port it saw every conversation on that
+port.
+
+**An IPv4-mapped IPv6 address was treated as a different machine.** A dual-stack listener
+reports its peer as `::ffff:127.0.0.1` where the client reports `127.0.0.1`. Those are the
+same address, and treating them as different split one conversation into two flows: the
+bytes divided between them, the process attribution landing on one and not the other, and
+the same endpoint listed twice under two spellings. Folded when a flow key is canonicalised.
+
 ## [0.5.5] — 2026-08-13
 
 ### Fixed

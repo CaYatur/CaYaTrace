@@ -65,6 +65,27 @@ public sealed class SessionOptions
     public CaYaTrace.Collectors.Network.PktmonOptions Pktmon { get; init; }
         = CaYaTrace.Collectors.Network.PktmonOptions.Default;
 
+    /// <summary>
+    /// Capture what programs on this machine say to each other, with their contents.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Off by default, and for two reasons rather than one. It needs a packet driver this
+    /// tool does not install, and turning it on changes what a recording contains: local
+    /// conversations belonging to every process on the machine, not only the subject's.
+    /// </para>
+    /// <para>
+    /// It is also the only way to see those contents at all. An established loopback
+    /// connection never becomes a packet on any adapter, so without this a program talking
+    /// to a local helper it installed appears as a connection to 127.0.0.1 carrying some
+    /// number of bytes, and the bytes themselves are simply not recoverable afterwards.
+    /// </para>
+    /// </remarks>
+    public bool CaptureLoopback { get; init; }
+
+    public CaYaTrace.Collectors.Network.LoopbackOptions Loopback { get; init; }
+        = CaYaTrace.Collectors.Network.LoopbackOptions.Default;
+
     /// <summary>Take before/after system inventories around the session.</summary>
     public bool CaptureSnapshots { get; init; } = true;
 
@@ -222,6 +243,11 @@ public sealed class SessionOrchestrator : IAsyncDisposable
             // bytes on the wire to answer their question.
             if (_options.CapturePackets)
                 _collectors.Add(new CaYaTrace.Collectors.Network.PktmonCollector(_options.Pktmon));
+
+            // Off by default: it needs a driver this tool does not install, and it records
+            // the whole machine's local conversations rather than only the subject's.
+            if (_options.CaptureLoopback)
+                _collectors.Add(new CaYaTrace.Collectors.Network.LoopbackCollector(_options.Loopback));
 
             if (_options.InterceptionConsent is { } consent)
                 _collectors.Add(new Proxy.ProxyCollector(consent, _options.ProxyOptions));

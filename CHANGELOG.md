@@ -4,6 +4,46 @@ All notable changes to CaYaTrace are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.7] — 2026-08-17
+
+### Added
+
+**A way to get the packet driver, from inside the tool.** An analysis machine is
+deliberately clean, so the most useful capture in this tool is unavailable on exactly the
+machines that most need it — and "loopback capture was skipped" written into a session log
+afterwards is not help.
+
+Ticking **Capture local conversations** on a machine that cannot do it now says so
+immediately, and offers the shortest honest route:
+
+- **What is actually missing**, distinguishing the two cases, because they have different
+  fixes. No driver at all means installing it. A driver with no loopback adapter means the
+  installer's *Support loopback traffic* option was cleared during setup — it is on by
+  default, so running the installer again and leaving it ticked is the entire fix.
+- **A link to its authors**, and the address as selectable text beside it, because a virtual
+  machine with no browser is a normal state rather than an edge case.
+- **A button to start an installer already on the machine.** Getting a file into an isolated
+  VM is the awkward part of this; hunting for it again in Explorer afterwards is busywork. It
+  looks beside the executable, on the desktop, and in the profile and Downloads folders,
+  newest version first.
+- **Check again**, which works without restarting the tool — a missing driver is no longer
+  remembered for the life of the process, since installing it while the tool is open is
+  exactly what an operator does after being told it is absent.
+
+**What this deliberately does not do**, and why it is written down: CaYaTrace does not ship
+Npcap and never installs it unattended. Npcap's free licence covers neither — redistributing
+it inside another product and installing it silently are both reserved for their paid OEM
+licence — so a tool that quietly did either would put its user in breach of terms they never
+read. The installer's own screens are also where those terms are accepted and where the
+loopback option is chosen.
+
+**Nothing is started on the strength of a file name.** A found installer is only offered
+after its Authenticode signature says who published it, and the publisher is shown next to
+the button because that is the reason the button is safe to press. The signature is checked
+again at the moment of launching, not trusted from when the file was found. Starting it needs
+an explicit confirmation, which names the signer and states that CaYaTrace passes no
+arguments of its own.
+
 ## [0.5.6] — 2026-08-17
 
 ### Added

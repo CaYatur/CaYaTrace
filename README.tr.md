@@ -7,7 +7,7 @@
 [![Lisans: MIT](https://img.shields.io/badge/Lisans-MIT-dc2626.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-111826.svg)](#gereksinimler)
 [![.NET](https://img.shields.io/badge/.NET-8.0-182438.svg)](#gereksinimler)
-[![Durum](https://img.shields.io/badge/durum-0.5.6%20önizleme-b91c1c.svg)](docs/ROADMAP.md)
+[![Durum](https://img.shields.io/badge/durum-0.5.7%20önizleme-b91c1c.svg)](docs/ROADMAP.md)
 
 [English README](README.md) · [Mimari](docs/ARCHITECTURE.md) · [Güvenlik](SECURITY.md) · [Yol haritası](docs/ROADMAP.md)
 
@@ -75,6 +75,14 @@ artık yalnızca hedefin değil, makinedeki *her* sürecin yerel trafiğini içe
 Unix-domain yuvaları, adlandırılmış kanallar ve loopback TLS hâlâ içerik değil boyut veya
 şifreli metin olarak kaydedilir. Oturum, bunlardan hangisinin geçerli olduğunu söyler.
 
+Bir analiz makinesi kasten temiz tutulur; dolayısıyla bu sürücü, en çok ihtiyaç duyulan
+makinelerde genellikle kurulu değildir. Seçeneği kurulu olmayan bir makinede işaretlemek
+neyin eksik olduğunu anlatır, yazarlarına bağlantı verir, tarayıcısı olmayan bir sanal
+makine için adresi seçilebilir metin olarak gösterir ve yükleyiciyi makineye zaten
+kopyaladıysanız — imzalayanı denetledikten sonra — başlatmayı önerir. CaYaTrace, Npcap'i
+paketlemez ve asla arka planda kurmaz: ücretsiz lisansı ikisine de izin vermez ve
+koşullarının kabul edildiği yer yükleyicinin kendi ekranlarıdır.
+
 ## Neden böyle tasarlandı
 
 - **Daha çok olay yerine doğru ilişkilendirme.** PID'ler geri dönüştürülür; dosya ve kayıt
@@ -90,7 +98,7 @@ Unix-domain yuvaları, adlandırılmış kanallar ve loopback TLS hâlâ içerik
 - **Cihazı bozamayacak bir kaldırma.** Geçersiz kılınamayan yasak listesi, parmak izi
   doğrulaması, silme yerine karantina, geri alma günlüğü ve varsayılan olarak prova modu.
 
-## Durum — 0.5.6 önizleme
+## Durum — 0.5.7 önizleme
 
 Bu erken bir sürüm. Bugün gerçekten çalışan ile yalnızca tasarlanmış olan dürüstçe ayrılmıştır:
 

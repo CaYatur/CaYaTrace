@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-dc2626.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-111826.svg)](#requirements)
 [![.NET](https://img.shields.io/badge/.NET-8.0-182438.svg)](#requirements)
-[![Status](https://img.shields.io/badge/status-0.5.6%20preview-b91c1c.svg)](docs/ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-0.5.7%20preview-b91c1c.svg)](docs/ROADMAP.md)
 
 [Türkçe README](README.tr.md) · [Architecture](docs/ARCHITECTURE.md) · [Security](SECURITY.md) · [Roadmap](docs/ROADMAP.md)
 
@@ -74,6 +74,14 @@ contains local traffic from *every* process on the machine rather than only the 
 and Unix-domain sockets, named pipes and loopback TLS are still recorded as sizes or
 ciphertext rather than contents. The session says which of those applied.
 
+An analysis machine is deliberately clean, so this is usually not installed on the machines
+that most need it. Ticking the option on a machine without it explains what is missing,
+links to its authors, shows the address as selectable text for a virtual machine with no
+browser, and — if you have already copied the installer in — offers to start it, after
+checking who signed it. CaYaTrace does not bundle Npcap and never installs it in the
+background: its free licence permits neither, and the installer's own screens are where its
+terms are accepted.
+
 ## Why it is built the way it is
 
 - **Correct attribution over more events.** PIDs get recycled; file and registry events carry
@@ -88,7 +96,7 @@ ciphertext rather than contents. The session says which of those applied.
 - **Removal that cannot brick the machine.** Non-overridable deny list, fingerprint
   verification, quarantine instead of delete, rollback journal, dry run by default.
 
-## Status — 0.5.6 preview
+## Status — 0.5.7 preview
 
 This is an early release. What is real today versus designed is tracked honestly:
 

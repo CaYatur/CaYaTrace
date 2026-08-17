@@ -1384,3 +1384,47 @@ tr.expandable:hover { background: var(--bg-dark); }
   /* Long header values must scroll inside the cell, not widen the table. */
   overflow-x: auto;
 }
+
+/* ------------------------------------------------------ the packet driver
+
+   Shown under the recording options when the loopback capture is ticked on a machine that
+   cannot do it — which is most fresh analysis machines. Informative rather than alarming:
+   nothing is broken, one option is unavailable, and the way to change that is right here. */
+
+.npcap-box {
+  margin-top: 12px;
+  padding: 14px;
+  background: var(--bg-dark);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  border-radius: var(--radius-sm);
+}
+
+.npcap-head { font-size: 13px; font-weight: 700; color: var(--info); margin-bottom: 6px; }
+
+.npcap-ok {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--success);
+  overflow-wrap: anywhere;
+}
+
+.npcap-found {
+  margin-top: 12px;
+  padding: 10px;
+  background: var(--bg-medium);
+  border-radius: var(--radius-xs);
+}
+
+.npcap-found-what { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.npcap-found code { display: block; font-size: 11px; margin-bottom: 8px; }
+
+.npcap-address {
+  display: block;
+  margin-top: 10px;
+  padding: 6px 8px;
+  background: var(--bg-medium);
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  cursor: text;
+  user-select: all;
+}

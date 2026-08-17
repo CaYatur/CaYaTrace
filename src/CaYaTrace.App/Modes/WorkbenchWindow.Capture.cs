@@ -449,4 +449,80 @@ public sealed partial class WorkbenchWindow
             Toast(ex.Message, "error");
         }
     }
+    // ------------------------------------------------------- the packet driver
+
+    /// <summary>
+    /// Reports what the machine has, so the page can offer the shortest way to fix it.
+    /// </summary>
+    /// <remarks>
+    /// A fresh analysis virtual machine has nothing installed, which is the point of one —
+    /// so the most useful capture in this tool is unavailable on exactly the machines it
+    /// matters most on, and "it was skipped" written into a log afterwards is not help.
+    /// </remarks>
+    private void PostNpcapStatus()
+    {
+        Collectors.Network.NpcapPresence presence = Collectors.Network.NpcapSetup.Inspect();
+
+        Post("npcap", new
+        {
+            state = presence.State.ToString(),
+            detail = presence.Detail,
+            device = presence.Device,
+            ready = presence.State == Collectors.Network.NpcapState.Ready,
+
+            // An installer already on this machine, verified by who signed it. Offering to
+            // start one that merely has the right file name would be a way to be talked
+            // into running something else.
+            installer = presence.Installer,
+            installerSigner = presence.InstallerSigner,
+            installerVersion = presence.InstallerVersion,
+
+            downloadPage = Collectors.Network.NpcapSetup.DownloadPage,
+        });
+    }
+
+    /// <summary>Opens the official download page in the operator's browser.</summary>
+    private void OpenNpcapDownload()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                Collectors.Network.NpcapSetup.DownloadPage) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            // A machine with no browser is a normal state for an analysis VM, and the page
+            // shows the address as text for exactly that case.
+            Toast(Strings.Format("npcap.open_failed", Collectors.Network.NpcapSetup.DownloadPage), "error");
+        }
+    }
+
+    /// <summary>
+    /// Starts the installer the operator brought into this machine.
+    /// </summary>
+    /// <remarks>
+    /// With its own interface, and no arguments. Unattended installation belongs to Npcap's
+    /// paid licence rather than being a flag to be discovered, and the installer's screens
+    /// are where the operator reads the terms and decides whether to support loopback
+    /// traffic — which is the entire reason they are running it.
+    /// </remarks>
+    private void RunNpcapInstaller()
+    {
+        (string? path, string? signer, string? _) = Collectors.Network.NpcapSetup.FindInstaller();
+
+        if (path is null)
+        {
+            Toast(Strings.T("npcap.no_installer"), "error");
+            PostNpcapStatus();
+            return;
+        }
+
+        if (Collectors.Network.NpcapSetup.Launch(path, out string error))
+        {
+            Toast(Strings.Format("npcap.started", signer ?? "Npcap"), "ok");
+            return;
+        }
+
+        Toast(error, "error");
+    }
 }

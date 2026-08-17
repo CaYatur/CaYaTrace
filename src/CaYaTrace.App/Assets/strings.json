@@ -533,7 +533,22 @@
     "outcome.pending": "Waiting",
     "remediate.caution": "act on this one deliberately",
     "capture.opt.loopback": "Capture local conversations",
-    "capture.opt.loopback_hint": "What programs on this machine say to each other, with the contents. A connection over 127.0.0.1 never becomes a packet on any adapter, so this is the only way to read one — everything else can say a program sent 4,096 bytes to itself and nothing about what they were. Two caveats: it needs Npcap, the free packet driver Wireshark uses, and it records the whole machine’s local traffic rather than only the subject’s, so a recording made with this on contains more than one made without it."
+    "capture.opt.loopback_hint": "What programs on this machine say to each other, with the contents. A connection over 127.0.0.1 never becomes a packet on any adapter, so this is the only way to read one — everything else can say a program sent 4,096 bytes to itself and nothing about what they were. Two caveats: it needs Npcap, the free packet driver Wireshark uses, and it records the whole machine’s local traffic rather than only the subject’s, so a recording made with this on contains more than one made without it.",
+    "npcap.ready": "Ready — capturing through {0}",
+    "npcap.missing_title": "This needs Npcap, which is not installed",
+    "npcap.missing_body": "Npcap is the free packet driver Wireshark uses. Its loopback adapter is the only thing on Windows that can see a program talking to another program on the same machine — an established connection over 127.0.0.1 never becomes a packet on any network adapter, so without it a local conversation is a byte count and nothing more. Recording still works; this one option is what is unavailable.",
+    "npcap.no_adapter_title": "Npcap is installed, but without a loopback adapter",
+    "npcap.no_adapter_body": "The installer’s \"Support loopback traffic\" option was cleared during setup. It is on by default, so running the installer again and leaving it ticked is the whole fix — nothing else about the install needs to change.",
+    "npcap.found": "An installer is already on this machine{0}, signed by {1}",
+    "npcap.run": "Run that installer",
+    "npcap.run_confirm_title": "Start the Npcap installer?",
+    "npcap.run_confirm_body": "This starts a file signed by {0}, with its own screens and an administrator prompt. CaYaTrace installs nothing itself and passes no arguments: the installer’s screens are where you accept its terms and choose whether to support loopback traffic.\n\n{1}",
+    "npcap.open": "Open the download page",
+    "npcap.recheck": "Check again",
+    "npcap.no_installer": "No signed Npcap installer was found on this machine",
+    "npcap.started": "Started the installer signed by {0}. Use \"Check again\" once it finishes.",
+    "npcap.open_failed": "No browser would open. The address is {0}",
+    "npcap.licence": "Download it from its authors — CaYaTrace does not bundle it and never installs it in the background. Npcap is free for personal and internal use with a limit on installations; the terms are on the page and in the installer."
   },
   "tr": {
     "app.title": "CaYaTrace",
@@ -1057,6 +1072,21 @@
     "outcome.pending": "Bekliyor",
     "remediate.caution": "bunu bilerek onaylayın",
     "capture.opt.loopback": "Yerel konuşmaları yakala",
-    "capture.opt.loopback_hint": "Bu makinedeki programların birbirine ne söylediğini, içeriğiyle birlikte. 127.0.0.1 üzerindeki bir bağlantı hiçbir ağ bağdaştırıcısında pakete dönüşmez; dolayısıyla onu okumanın tek yolu budur — diğer her şey bir programın kendisine 4.096 bayt gönderdiğini söyleyebilir, bu baytların ne olduğunu söyleyemez. İki not: Wireshark’ın kullandığı ücretsiz paket sürücüsü Npcap gerekir ve yalnızca hedefin değil, makinenin tüm yerel trafiği kaydedilir — yani bu açıkken alınan bir kayıt, kapalıyken alınandan fazlasını içerir."
+    "capture.opt.loopback_hint": "Bu makinedeki programların birbirine ne söylediğini, içeriğiyle birlikte. 127.0.0.1 üzerindeki bir bağlantı hiçbir ağ bağdaştırıcısında pakete dönüşmez; dolayısıyla onu okumanın tek yolu budur — diğer her şey bir programın kendisine 4.096 bayt gönderdiğini söyleyebilir, bu baytların ne olduğunu söyleyemez. İki not: Wireshark’ın kullandığı ücretsiz paket sürücüsü Npcap gerekir ve yalnızca hedefin değil, makinenin tüm yerel trafiği kaydedilir — yani bu açıkken alınan bir kayıt, kapalıyken alınandan fazlasını içerir.",
+    "npcap.ready": "Hazır — {0} üzerinden yakalanıyor",
+    "npcap.missing_title": "Bunun için Npcap gerekiyor, kurulu değil",
+    "npcap.missing_body": "Npcap, Wireshark’ın kullandığı ücretsiz paket sürücüsüdür. Loopback bağdaştırıcısı, Windows üzerinde bir programın aynı makinedeki başka bir programla konuştuğunu görebilen tek şeydir — 127.0.0.1 üzerinde kurulmuş bir bağlantı hiçbir ağ bağdaştırıcısında pakete dönüşmez, dolayısıyla o olmadan yerel bir konuşma yalnızca bir bayt sayısıdır. Kayıt yine çalışır; kullanılamayan yalnızca bu seçenektir.",
+    "npcap.no_adapter_title": "Npcap kurulu, ama loopback bağdaştırıcısı yok",
+    "npcap.no_adapter_body": "Kurulum sırasında yükleyicinin \"Support loopback traffic\" seçeneği kaldırılmış. Bu seçenek varsayılan olarak açıktır; yükleyiciyi yeniden çalıştırıp işaretli bırakmak tek başına yeterlidir — kurulumla ilgili başka hiçbir şeyin değişmesi gerekmez.",
+    "npcap.found": "Bu makinede zaten bir yükleyici var{0}, imzalayan: {1}",
+    "npcap.run": "O yükleyiciyi çalıştır",
+    "npcap.run_confirm_title": "Npcap yükleyicisi başlatılsın mı?",
+    "npcap.run_confirm_body": "{0} tarafından imzalanmış bir dosya, kendi ekranları ve bir yönetici istemiyle başlatılır. CaYaTrace hiçbir şeyi kendisi kurmaz ve hiçbir argüman geçmez: yükleyicinin ekranları, koşullarını kabul ettiğiniz ve loopback trafiğinin desteklenip desteklenmeyeceğini seçtiğiniz yerdir.\n\n{1}",
+    "npcap.open": "İndirme sayfasını aç",
+    "npcap.recheck": "Yeniden denetle",
+    "npcap.no_installer": "Bu makinede imzalı bir Npcap yükleyicisi bulunamadı",
+    "npcap.started": "{0} tarafından imzalanan yükleyici başlatıldı. Bitince \"Yeniden denetle\"yi kullanın.",
+    "npcap.open_failed": "Hiçbir tarayıcı açılmadı. Adres: {0}",
+    "npcap.licence": "Yazarlarından indirin — CaYaTrace onu paketlemez ve asla arka planda kurmaz. Npcap, kurulum sayısı sınırlı olmak üzere kişisel ve kurum içi kullanım için ücretsizdir; koşullar sayfada ve yükleyicinin içindedir."
   }
 }

@@ -105,6 +105,17 @@ internal static class ProcessMetadata
     private static readonly Guid WinTrustActionGenericVerifyV2 =
         new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
 
+    /// <summary>
+    /// Who signed a file on disk, for callers outside the enrichment path.
+    /// </summary>
+    /// <remarks>
+    /// Exposed because "who published this executable" is the only safe basis for offering
+    /// to run one, and there should be exactly one answer to that question in this
+    /// assembly. Uncached: the callers that need it ask about one file, once, and a stale
+    /// answer about a file that has since been replaced is the failure it exists to prevent.
+    /// </remarks>
+    internal static (SignatureState State, string? Signer) Verify(string path) => VerifySignature(path);
+
     private static (SignatureState State, string? Signer) VerifySignature(string path)
     {
         if (!File.Exists(path)) return (SignatureState.CheckFailed, null);

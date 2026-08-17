@@ -240,6 +240,10 @@ public sealed partial class WorkbenchWindow : Form
             case "pickFile": PickFile(Str(payload, "purpose")); break;
             case "pickFolder": PickFolder(Str(payload, "purpose")); break;
 
+            case "npcapStatus": PostNpcapStatus(); break;
+            case "npcapOpenDownload": OpenNpcapDownload(); break;
+            case "npcapRunInstaller": RunNpcapInstaller(); break;
+
             case "startCapture": StartCapture(payload); break;
             case "stopCapture": StopCapture(); break;
 

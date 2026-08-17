@@ -141,6 +141,7 @@
           <div class="card">
             <h3 data-i18n="capture.options"></h3>
             <div id="captureOptions"></div>
+            <div id="npcapNotice"></div>
           </div>
 
           <button class="btn btn-primary" id="btnStartCapture" data-i18n="capture.start" type="button"></button>
@@ -487,6 +488,7 @@ const state = {
   expanded: new Set(),
 
   capture: { state: 'idle', events: 0, elapsed: 0, mode: 'launch' },
+  npcap: null,
   sessions: [],
   networkTab: 'requests',
 
@@ -1431,6 +1433,17 @@ function renderCapture() {
       input.type = 'checkbox';
       input.id = 'opt_' + opt.id;
       input.checked = opt.def;
+
+      /* The loopback capture is the one option that can be unavailable, and on a fresh
+         analysis machine it usually is. Asked the moment it is ticked rather than
+         discovered afterwards in the session log. */
+      if (opt.id === 'loopback') {
+        input.onchange = () => {
+          if (input.checked) bridge.send('npcapStatus', {});
+          else { state.npcap = null; renderNpcapNotice(); }
+        };
+      }
+
       label.appendChild(input);
 
       const body = el('div');
@@ -1454,6 +1467,100 @@ function renderCapture() {
 
   syncCaptureFields();
   renderCaptureLive();
+}
+
+/*
+ * What to do when the packet driver the loopback capture needs is not there.
+ *
+ * Which it usually is not: an analysis machine is deliberately clean, so the most useful
+ * capture in this tool is unavailable on exactly the machines that most need it. Naming the
+ * driver and leaving the operator to work out the rest is not help.
+ *
+ * Three things are offered and no more. The download page, because the installer has to come
+ * from its authors and nowhere else. The address as selectable text, because a machine with
+ * no browser is a normal state for a virtual one. And, when a signed installer is already
+ * sitting on the machine, a button to start it — getting a file into an isolated VM is the
+ * awkward part, and hunting for it again in Explorer afterwards is busywork.
+ *
+ * Nothing is downloaded and nothing is installed unattended. Npcap's free licence covers
+ * neither, and a tool that quietly did either would put its user in breach of terms they
+ * never saw.
+ */
+function renderNpcapNotice() {
+  const host = document.getElementById('npcapNotice');
+  if (!host) return;
+  host.innerHTML = '';
+
+  const n = state.npcap;
+  if (!n || n.ready) {
+    if (n && n.ready) {
+      const ok = el('div', 'npcap-ok');
+      ok.textContent = '✓ ' + t('npcap.ready', n.device || '');
+      host.appendChild(ok);
+    }
+    return;
+  }
+
+  const box = el('div', 'npcap-box');
+
+  box.appendChild(el('div', 'npcap-head',
+    n.state === 'NoLoopbackAdapter' ? t('npcap.no_adapter_title') : t('npcap.missing_title')));
+
+  box.appendChild(el('div', 'hint',
+    n.state === 'NoLoopbackAdapter' ? t('npcap.no_adapter_body') : t('npcap.missing_body')));
+
+  /* An installer already here, and who signed it. The signer is shown because it is the
+     reason the button is safe to press. */
+  if (n.installer) {
+    const found = el('div', 'npcap-found');
+    found.appendChild(el('div', 'npcap-found-what',
+      t('npcap.found', n.installerVersion || '', n.installerSigner || '')));
+    found.appendChild(el('code', 'wrap-any', n.installer));
+
+    const run = el('button', 'btn btn-primary', t('npcap.run'));
+    run.type = 'button';
+    run.onclick = () => showModal({
+      title: t('npcap.run_confirm_title'),
+      body: t('npcap.run_confirm_body', n.installerSigner || '', n.installer),
+      actions: [
+        { label: t('common.cancel') },
+        { label: t('npcap.run'), className: 'btn-primary',
+          onClick: () => bridge.send('npcapRunInstaller', {}) },
+      ],
+    });
+    found.appendChild(run);
+    box.appendChild(found);
+  }
+
+  const row = el('div', 'row tight wrap');
+  row.style.marginTop = '10px';
+
+  const open = el('button', 'btn', t('npcap.open'));
+  open.type = 'button';
+  open.onclick = () => bridge.send('npcapOpenDownload', {});
+  row.appendChild(open);
+
+  const again = el('button', 'btn', t('npcap.recheck'));
+  again.type = 'button';
+  again.onclick = () => bridge.send('npcapStatus', {});
+  row.appendChild(again);
+
+  box.appendChild(row);
+
+  /* Selectable, for the machine with no browser — which is most virtual ones. */
+  const address = el('code', 'wrap-any npcap-address', n.downloadPage || 'https://npcap.com');
+  address.onclick = () => {
+    const range = document.createRange();
+    range.selectNodeContents(address);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+  box.appendChild(address);
+
+  box.appendChild(el('div', 'hint', t('npcap.licence')));
+
+  host.appendChild(box);
 }
 
 function syncCaptureFields() {
@@ -3783,6 +3890,11 @@ function wireBridge() {
     state.remediation = payload;
     renderRemediation();
     if (payload.held) renderQuarantine();
+  });
+
+  bridge.on('npcap', payload => {
+    state.npcap = payload;
+    renderNpcapNotice();
   });
 
   bridge.on('quarantine', payload => {

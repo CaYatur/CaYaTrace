@@ -88,7 +88,7 @@ dry-run output before applying anything you did not create yourself.
 Report security issues privately — please do not open a public issue.
 
 - GitHub: [private security advisory](https://github.com/CaYatur/CaYaTrace/security/advisories/new)
-- Email: cayatur@gmail.com
+- Email: contact@cayadev.com
 
 Please include the version, the OS build, what you observed, and steps to reproduce. Expect
 an initial response within a week.
